@@ -17,8 +17,11 @@ const _rawFetch = window.fetch.bind(window);
         apiReadyResolve(true);
         return;
     }
+    // Абсолютный путь от корня сайта: на GitHub Pages страница может
+    // открываться как 404.html на вложенном пути (например /watch/...),
+    // относительный './api-url.json' там не находится и API разваливался.
     if (h.endsWith('.github.io') || h === 'cha3er.github.io') {
-        _rawFetch('./api-url.json?t=' + Date.now(), { cache: 'no-store' })
+        _rawFetch(location.origin + '/api-url.json?t=' + Date.now(), { cache: 'no-store' })
             .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no api-url.json'))))
             .then((j) => {
                 if (j && j.api) API_BASE = String(j.api).trim().replace(/\/+$/, '');
@@ -2083,7 +2086,7 @@ function stAccountTab() {
         ${methodRow('<svg width="16" height="16" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>',
             'Google', hasGoogle ? 'Аккаунт Google привязан' : 'Быстрый вход одним кликом',
             pill(hasGoogle, hasGoogle ? 'Настроен' : 'Не настроен'),
-            hasGoogle ? '' : `<button type="button" class="st-linkbtn" onclick="window.location.href='${API_BASE}/api/auth/google/start?link=1'">Привязать</button>`)}
+            hasGoogle ? '' : `<button type="button" class="st-linkbtn" onclick="startGooglePopup(true)">Привязать</button>`)}
         ${methodRow('<svg width="16" height="16" viewBox="0 0 24 24" fill="#2AABEE"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>',
                 'Telegram', 'Вход и уведомления через бота',
                 pill(false, 'Скоро'))}
@@ -6397,9 +6400,9 @@ function loadGsiScript(cb) {
     s.async = true;
     s.defer = true;
     s.onload = cb;
-    s.onerror = () => enableGoogleFallback(true);   // скрипт недоступен — включаем запасной вход
+    s.onerror = () => enableGoogleFallback(true);   // скрипт заблокирован — работает popup-вход
     document.head.appendChild(s);
-    // страховка: если за 7 секунд кнопка GIS не нарисовалась — запасной вход
+    // страховка: если за 7 секунд кнопка GIS не нарисовалась — прячем её пустой слой
     setTimeout(() => { if (!window._gisRendered) enableGoogleFallback(false); }, 7000);
 }
 
@@ -6408,30 +6411,13 @@ function enableGoogleFallback(scriptFailed) {
     googleFallback = true;
     // Кнопка всегда в разметке (без дёрганий). Прячем прозрачный слой GIS,
     // когда рендер не состоялся — иначе он невидимо съедает клики.
+    // Сам вход при этом продолжает работать через popup-схему (startGooglePopup).
     $('#amOauth .am-oauth-gis')?.classList.add('hidden');
-    if (scriptFailed) {
-        toast('Не удалось подключить вход Google — проверь блокировщик рекламы (он может блокировать accounts.google.com) или войди логином/паролем', 'error');
+    if (scriptFailed && !window._gPopupToastShown) {
+        window._gPopupToastShown = true;
+        toast('Вход Google работает в отдельном окне — просто нажми на кнопку', 'info');
     }
 }
-
-// Клик по нашей кнопке: если настоящая кнопка Google не отрисовалась,
-// сами открываем вход (popup) или объясняем, почему не работает.
-function bindGoogleButtonFallback() {
-    $('#amOauth .am-oauth-btn')?.addEventListener('click', () => {
-        if (typeof window.google !== 'undefined' && window.google?.accounts?.id) {
-            try {
-                window.google.accounts.id.prompt();   // окно входа Google
-                return;
-            } catch (e) { /* ниже объяснение */ }
-        }
-        if (isPrivateHost(location.hostname)) {
-            toast('Вход через Google недоступен на локальном адресе — открой https://cha3er.github.io и войди там', 'error');
-            return;
-        }
-        toast('Вход через Google сейчас недоступен — попробуй обновить страницу или войди логином/паролем', 'error');
-    });
-}
-bindGoogleButtonFallback();
 
 function isPrivateHost(h) {
     h = String(h || location.hostname || '').toLowerCase();
@@ -6445,6 +6431,141 @@ function isPrivateHost(h) {
     return false;
 }
 
+/* ===== Popup-вход через Google (не зависит от gsi.js и блокировщиков) =====
+   Схема: открываем окно accounts.google.com с redirect_uri = наш сайт +
+   /api/auth/google/callback (зарегистрирован в Google Console).
+   GitHub Pages отдаёт по этому адресу 404.html (копия сайта), наш код на нём
+   видит ?code=..&state=.. и передаёт их в opener через postMessage.
+   Дальше бэкенд обменивает код на id_token и логинит как обычно. */
+
+async function startGooglePopup(linkMode) {
+    let cfg = window._gCfg;
+    if (!cfg || !cfg.client_id) {
+        try { cfg = await fetch('/api/auth/google/config').then(r => r.json()); } catch (e) { cfg = null; }
+        if (cfg && cfg.client_id) window._gCfg = cfg;
+    }
+    if (!cfg || !cfg.client_id) {
+        toast('Вход через Google ещё настраивается — попробуй чуть позже', 'info');
+        return;
+    }
+    if (!linkMode && isPrivateHost(location.hostname)) {
+        toast('Вход через Google недоступен на локальном адресе — открой https://cha3er.github.io и войди там', 'error');
+        return;
+    }
+    const state = 'go' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try {
+        sessionStorage.setItem(linkMode ? 'g_link_state' : 'g_oauth_state', state);
+    } catch (e) { /* без state-проверки хуже, но не смертельно */ }
+    const params = new URLSearchParams({
+        client_id: cfg.client_id,
+        redirect_uri: location.origin + '/api/auth/google/callback',
+        response_type: 'code',
+        scope: 'openid email profile',
+        state: state,
+        prompt: 'select_account',
+    });
+    const win = window.open(
+        'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString(),
+        'google_oauth',
+        'width=480,height=640'
+    );
+    if (!win) {
+        toast('Браузер заблокировал окно входа — разреши всплывающие окна для сайта', 'error');
+    }
+}
+
+window.addEventListener('message', (e) => {
+    if (e.origin !== location.origin) return;
+    const d = e.data || {};
+    if (d.source !== 'google-oauth' || !d.code) return;
+    const isLink = (() => { try { return !!sessionStorage.getItem('g_link_state'); } catch (_) { return false; } })();
+    const key = isLink ? 'g_link_state' : 'g_oauth_state';
+    let saved = '';
+    try {
+        saved = sessionStorage.getItem(key) || '';
+        sessionStorage.removeItem(key);
+    } catch (_) { /* пусто */ }
+    if (!saved || !d.state || saved !== d.state) {
+        toast('Просроченная попытка входа Google — попробуй ещё раз', 'error');
+        return;
+    }
+    if (isLink) finishGoogleLink(d.code);
+    else finishGooglePopup(d.code);
+});
+
+async function finishGooglePopup(oauthCode) {
+    try {
+        const res = await fetch((API_BASE || '') + '/api/account/google/oauth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ code: oauthCode }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Google не принял вход');
+        // дальше — обычный процесс входа: тот же обработчик, что и у GIS-кнопки
+        await googleLogin(data.id_token, $('#amCodeField input')?.value.trim() || '');
+    } catch (err) {
+        const er = $('#accountError');
+        if (er) { er.textContent = err.message || 'Ошибка входа через Google'; er.classList.remove('hidden'); }
+        toast(err.message || 'Ошибка входа через Google', 'error');
+    }
+}
+
+async function finishGoogleLink(oauthCode) {
+    try {
+        const res = await fetch((API_BASE || '') + '/api/account/google/oauth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ code: oauthCode, link: 1 }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Не удалось привязать Google');
+        toast('Google привязан к аккаунту ✓');
+        setTimeout(() => location.reload(), 900);
+    } catch (err) {
+        toast(err.message || 'Ошибка привязки Google', 'error');
+        setTimeout(() => location.reload(), 1200);
+    }
+}
+
+/* Страница колбэка: GitHub Pages отдаёт 404.html по пути /api/auth/google/callback.
+   Код сработает и в popup (отправит код в opener и закроет окно),
+   и при обычной навигации (перешлёт код сразу на бэкенд). */
+(function googleOauthCallbackHandler() {
+    try {
+        if (location.pathname !== '/api/auth/google/callback') return;
+        const q = new URLSearchParams(location.search);
+        const code = q.get('code');
+        if (!code) { setTimeout(() => window.close(), 50); return; }
+        if (window.opener && window.opener !== window && !window.opener.closed) {
+            window.opener.postMessage({ source: 'google-oauth', code: code, state: q.get('state') }, location.origin);
+            document.title = 'Вход выполнен — окно закроется…';
+            setTimeout(() => window.close(), 400);
+            return;
+        }
+        // обычная навигация (не popup): дожидаемся адреса API и пересылаем код бэкенду
+        apiReady.then(() => {
+            if ((API_BASE || '').startsWith('http')) {
+                location.replace((API_BASE || '') + '/api/auth/google/callback?' + q.toString());
+            } else {
+                setTimeout(() => window.close(), 200);
+            }
+        });
+    } catch (e) { /* не мешаем обычной работе сайта */ }
+})();
+
+// Клик по нашей кнопке: если настоящий слой Google не отрисовался —
+// открываем окно входа Google сами.
+function bindGoogleButtonFallback() {
+    $('#amOauth .am-oauth-btn')?.addEventListener('click', () => {
+        if (window._gisRendered) return;   // настоящий слой Google ловит клики сам
+        startGooglePopup(false);
+    });
+}
+bindGoogleButtonFallback();
+
 function initGoogleAuth() {
     if (googleAuthReady) return;
     googleAuthReady = true;
@@ -6456,6 +6577,7 @@ function initGoogleAuth() {
     }
     fetch('/api/auth/google/config').then(r => r.json()).then(cfg => {
         if (!cfg || !cfg.enabled || !cfg.client_id) return;   // не настроено — кнопка просто никуда не ведёт
+        window._gCfg = cfg;   // конфиг для popup-входа (работает даже при заблокированном gsi.js)
         loadGsiScript(() => {
             try {
                 window.google.accounts.id.initialize({
