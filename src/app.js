@@ -6405,18 +6405,11 @@ function loadGsiScript(cb) {
 
 function enableGoogleFallback(scriptFailed) {
     if (googleFallback) return;
-    if (!window._gRedirectOk) {
-        if (scriptFailed) toast('Скрипт Google не загрузился — проверь блокировщик', 'error');
-        return;
-    }
     googleFallback = true;
-    // прячем пустой прозрачный слой Google — он лежит поверх кнопки и съедает клики
-    $('#amOauth .am-oauth-gis')?.classList.add('hidden');
-    window._gBtnOn = true;
-    amUpdateOauthVis();
-    $('#amOauth .am-oauth-btn')?.addEventListener('click', () => {
-        window.location.href = (API_BASE || '') + '/api/auth/google/start';
-    });
+    // Кнопка теперь всегда в разметке (без дёрганий): при недоступности
+    // Google она просто никуда не ведёт — прячем лишь прозрачный слой GIS,
+    // чтобы он не съедал клики и не мешал.
+    if (scriptFailed) toast('Вход через Google сейчас недоступен — используй логин/пароль', 'error');
 }
 
 function isPrivateHost(h) {
@@ -6441,8 +6434,7 @@ function initGoogleAuth() {
         return;
     }
     fetch('/api/auth/google/config').then(r => r.json()).then(cfg => {
-        if (!cfg || !cfg.enabled || !cfg.client_id) return;   // не настроено — кнопки нет
-        window._gRedirectOk = !!cfg.redirect;                 // запасной путь готов (есть секрет)?
+        if (!cfg || !cfg.enabled || !cfg.client_id) return;   // не настроено — кнопка просто никуда не ведёт
         loadGsiScript(() => {
             try {
                 window.google.accounts.id.initialize({
@@ -6455,7 +6447,6 @@ function initGoogleAuth() {
                     theme: 'filled_black', width: 400, text: 'continue_with',
                 });
                 window._gisRendered = true;
-                window._gBtnOn = true;
                 amUpdateOauthVis();
             } catch (e) {
                 enableGoogleFallback(false);
@@ -6547,8 +6538,9 @@ function amPlaceOauth() {
 }
 
 function amUpdateOauthVis() {
-    // кнопка Google видна: вход или первый шаг регистрации
-    const show = window._gBtnOn === true && (accountMode === 'login' || (accountMode === 'register' && amRegStep === 1));
+    // Кнопка всегда присутствует в разметке (без динамического добавления) —
+    // управляем только привязкой к режиму: вход или первый шаг регистрации.
+    const show = accountMode === 'login' || (accountMode === 'register' && amRegStep === 1);
     $('#amOauth')?.classList.toggle('hidden', !show);
     $('#amOauthDivider')?.classList.toggle('hidden', !show);
 }
