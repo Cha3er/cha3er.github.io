@@ -1,5 +1,46 @@
 'use strict';
 /* ============================================================
+   API BASE — GitHub Pages -> Cloudflare Tunnel
+   На github.io адрес API берётся из ./api-url.json (рядом с сайтом,
+   обновляется скриптом туннеля). Локально (localhost) — same-origin.
+   Настройки в localStorage можно отменить: localStorage.removeItem('apiOverride')
+   ============================================================ */
+let API_BASE = '';
+let apiReadyResolve = null;
+const apiReady = new Promise((r) => { apiReadyResolve = r; });
+const _rawFetch = window.fetch.bind(window);
+(function loadApiBase() {
+    const h = location.hostname;
+    const override = ('' + (localStorage.getItem('apiOverride') || '')).trim();
+    if (override) {
+        API_BASE = override.replace(/\/+$/, '');
+        apiReadyResolve(true);
+        return;
+    }
+    if (h.endsWith('.github.io') || h === 'cha3er.github.io') {
+        _rawFetch('./api-url.json?t=' + Date.now(), { cache: 'no-store' })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no api-url.json'))))
+            .then((j) => {
+                if (j && j.api) API_BASE = String(j.api).trim().replace(/\/+$/, '');
+                apiReadyResolve(!!API_BASE);
+            })
+            .catch(() => apiReadyResolve(false));
+    } else {
+        apiReadyResolve(true);
+    }
+})();
+window.fetch = function (input, init) {
+    try {
+        if (typeof input === 'string' && API_BASE) {
+            if (input.startsWith('/api/') || input.startsWith('/uploads/')) {
+                input = API_BASE + input;
+                init = { credentials: 'include', ...(init || {}) };
+            }
+        }
+    } catch (e) { /* игнорируем — fallback на оригинальный fetch */ }
+    return _rawFetch(input, init);
+};
+/* ============================================================
    ICONS
    ============================================================ */
 const ICONS = {
@@ -92,8 +133,8 @@ function safeParse(str, fallback) { try { const v = JSON.parse(str); return v ==
 function img(url) {
     if (!url) return '';
     // локальные загруженные файлы — напрямую, без прокси
-    if (url.startsWith('/uploads/')) return url;
-    return `/api/img?url=${encodeURIComponent(url)}`;
+    if (url.startsWith('/uploads/')) return API_BASE ? API_BASE + url : url;
+    return `${API_BASE}/api/img?url=${encodeURIComponent(url)}`;
 }
 function placeholderSvg(w, h) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#141417"/><stop offset="1" stop-color="#0c0c0e"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><g stroke="#3a3a42" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(${w / 2 - 14},${h / 2 - 14})"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 16h5M17 8h5M17 16h5"/></g></svg>`;
@@ -434,12 +475,21 @@ onclick="event.preventDefault();event.stopPropagation();removeHistory('${safeKey
     const newBadge = isNewRelease(it) ? `<span class="status-chip card-new">New</span>` : '';
     const statusHtml = statusBadgesHtml(it);
     const rightStackHtml = (removeBtnHtml || newBadge || statusHtml)
-        ? `<div class="absolute top-2 right-2 z-10 flex flex-col gap-1 items-end max-w-[62%]">${removeBtnHtml}${newBadge}${statusHtml}</div>`
+        ? `<div class="card-badges absolute top-2 right-2 z-10 flex flex-col gap-1 items-end max-w-[62%]">${removeBtnHtml}${newBadge}${statusHtml}</div>`
         : '';
     const ratingHtml = cardRatingHtml(it);
     const desc = (it.description || '').trim();
+    const quickHtml = `
+<div class="card-quick">
+ <button type="button" class="cq-btn cq-fav${isInLibrary('favorites', it) ? ' is-on' : ''}" title="В избранное" aria-label="В избранное"
+  onclick="event.preventDefault();event.stopPropagation();cardQuickAction('favorites','${safeKey}')">${icon('heart')}</button>
+ <button type="button" class="cq-btn cq-watch${isInLibrary('watching', it) ? ' is-on' : ''}" title="Смотрю" aria-label="Отметить «смотрю»"
+  onclick="event.preventDefault();event.stopPropagation();cardQuickAction('watching','${safeKey}')">${icon('play')}</button>
+ <button type="button" class="cq-btn cq-plan${isInLibrary('planned', it) ? ' is-on' : ''}" title="Буду смотреть" aria-label="Буду смотреть"
+  onclick="event.preventDefault();event.stopPropagation();cardQuickAction('planned','${safeKey}')">${icon('bookmark')}</button>
+</div>`;
     return `
-<a class="poster-card card-focusable" draggable="false" href="${href}"
+<a class="poster-card card-focusable" draggable="false" href="${href}" data-ckey="${safeKey}"
 aria-label="${escapeAttr(it.title)}${it.year ? ', ' + escapeAttr(it.year) : ''}"
 onclick="return handleCardActivate(event, '${safeKey}')">
 <div class="poster-wrap">
@@ -450,6 +500,7 @@ onclick="return handleCardActivate(event, '${safeKey}')">
  ${ratingHtml ? `<div class="absolute top-2 left-2 right-20 flex flex-wrap gap-1">${ratingHtml}</div>` : ''}
  ${rightStackHtml}
 <div class="card-play">${icon('playFill')}</div>
+ ${quickHtml}
  ${desc ? `<div class="card-info"><p class="ci-title">${escapeHtml(it.title)}</p><p class="ci-desc">${escapeHtml(desc)}</p></div>` : ''}
  <div class="absolute bottom-0 left-0 right-0 p-2.5">
  <p class="text-[13px] font-semibold leading-snug line-clamp-2 text-ink">${escapeHtml(it.title)}</p>
@@ -459,6 +510,49 @@ onclick="return handleCardActivate(event, '${safeKey}')">
 </div>
 </a>`;
 }
+
+/* ===== Быстрые действия на карточках (кнопки при наведении) ===== */
+const CQ_TOASTS = {
+    favorites: ['Добавлено в избранное', 'Убрано из избранного'],
+    watching: ['Отмечено: смотрю', 'Снят статус «смотрю»'],
+    planned: ['Добавлено в «буду смотреть»', 'Убрано из «буду смотреть»'],
+};
+function cardQuickAction(type, key) {
+    const it = getRegistered(key);
+    if (!it) return;
+    const was = isInLibrary(type, it);
+    // главная/каталог/поиск — лёгкий режим: карточка обновляется на месте,
+    // ленты не перерисовываются (ховер и прокрутка не сбиваются)
+    window._cardQuickLite = !(currentGridType && LIBRARY_META[currentGridType]);
+    try { setLibraryStatus(type, it); } finally { window._cardQuickLite = false; }
+    refreshCardQuickState(key);
+    const msg = (CQ_TOASTS[type] || [])[was ? 1 : 0];
+    if (msg) toast(msg);
+}
+/* кнопки и бейджи одной карточки — на месте, без перерисовки сетки */
+function refreshCardQuickState(key) {
+    const it = getRegistered(key);
+    if (!it) return;
+    $$('.poster-card[data-ckey="' + CSS.escape(key) + '"]').forEach(card => {
+        const badges = card.querySelector('.card-badges');
+        if (badges) {
+            const keep = [];
+            const rm = badges.querySelector('button[title="Удалить из истории"]');
+            if (rm) keep.push(rm.outerHTML);
+            const nw = badges.querySelector('.card-new');
+            if (nw) keep.push(nw.outerHTML);
+            badges.innerHTML = keep.join('') + statusBadgesHtml(it);
+        }
+        const q = card.querySelector('.card-quick');
+        if (q) {
+            const set = (cls, on) => { const b = q.querySelector(cls); if (b) b.classList.toggle('is-on', !!on); };
+            set('.cq-fav', isInLibrary('favorites', it));
+            set('.cq-watch', isInLibrary('watching', it));
+            set('.cq-plan', isInLibrary('planned', it));
+        }
+    });
+}
+
 
 /* ============================================================
    SKELETON GENERATORS
@@ -606,7 +700,13 @@ function renderHome() {
     if (!HOME_DATA) { return; }
     const parts = [renderContinueRow(), ...HOME_SECTIONS.map(s => renderRow(s.key, s.title, s.icon, HOME_DATA[s.key]))];
     parts.push(renderHistoryRow());
+    // не теряем прокрутку лент при перерисовке главной
+    const savedScrolls = {};
+    $$('#homeSections .row-scroller').forEach(r => { savedScrolls[r.dataset.row] = r.scrollLeft; });
     box.innerHTML = parts.filter(Boolean).join('');
+    $$('#homeSections .row-scroller').forEach(r => {
+        if (savedScrolls[r.dataset.row] != null) r.scrollLeft = savedScrolls[r.dataset.row];
+    });
     $('#homeSections').classList.remove('hidden');
 
     const trendItems = ((HOME_DATA.trending || []).concat(HOME_DATA.popular || []))
@@ -618,7 +718,7 @@ function renderHome() {
         heroBuildDots();
         $('#hero').classList.toggle('is-slider', heroSlides.length > 1);
         heroShow(0, true);
-        heroPrewarm();
+            heroPrewarm();
         $('#heroSkeleton').classList.add('hidden');
         $('#hero').classList.remove('hidden');
     } else {
@@ -702,6 +802,25 @@ function heroRestartFill(btn) {
     fill.style.animation = '';
 }
 
+/* HERO, картинка: широкая обложка — на весь блок; вертикальный постер —
+   размытый фон + чёткий постер целиком справа (класс is-poster, стили в app.css).
+   Постер больше не обрезается */
+function heroApplyImage(it) {
+    const hero = $('#hero');
+    const cover = it.cover && img(it.cover);
+    const poster = it.poster && img(it.poster);
+    if (cover) {
+        hero.classList.remove('is-poster');
+        $('#heroBg').src = cover;
+        $('#heroImg').src = cover;
+    } else {
+        const src = poster || placeholderSvg(600, 900);
+        hero.classList.add('is-poster');
+        $('#heroBg').src = src;
+        $('#heroImg').src = src;
+    }
+}
+
 function heroShow(idx, instant) {
     if (!heroSlides.length) return;
     heroIdx = (idx + heroSlides.length) % heroSlides.length;
@@ -709,7 +828,7 @@ function heroShow(idx, instant) {
     const apply = () => {
         registerItem(it);
         window._heroKey = itemKey(it);
-        $('#heroImg').src = img(it.cover || it.poster) || placeholderSvg(1280, 720);
+        heroApplyImage(it);
         $('#heroTitle').textContent = it.title || '';
         $('#heroDesc').textContent = it.description || '';
         const meta = $('#heroMeta'); if (meta) meta.innerHTML = heroMetaHtml(it);
@@ -1964,7 +2083,7 @@ function stAccountTab() {
         ${methodRow('<svg width="16" height="16" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>',
             'Google', hasGoogle ? 'Аккаунт Google привязан' : 'Быстрый вход одним кликом',
             pill(hasGoogle, hasGoogle ? 'Настроен' : 'Не настроен'),
-            hasGoogle ? '' : `<button type="button" class="st-linkbtn" onclick="window.location.href='/api/auth/google/start?link=1'">Привязать</button>`)}
+            hasGoogle ? '' : `<button type="button" class="st-linkbtn" onclick="window.location.href='${API_BASE}/api/auth/google/start?link=1'">Привязать</button>`)}
         ${methodRow('<svg width="16" height="16" viewBox="0 0 24 24" fill="#2AABEE"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>',
                 'Telegram', 'Вход и уведомления через бота',
                 pill(false, 'Скоро'))}
@@ -2305,8 +2424,8 @@ ${isEditingBio ? `
             <div class="rating-strip">
                 ${recentRatings.map(e => {
         const key = registerItem(e.item);
-        const stars = '★'.repeat(Math.round(e.rating));
-        return `<a href="${escapeAttr(titleHref(e.item))}" onclick="return handleCardActivate(event, '${escapeAttr(key)}')"
+                    const stars = '★'.repeat(Math.round(e.rating));
+                    return `<a href="${escapeAttr(titleHref(e.item))}" onclick="return handleCardActivate(event, '${escapeAttr(key)}')"
                         class="rating-mini-card card-focusable">
                         <span class="rating-mini-poster">
                             <img src="${img(e.item.poster) || placeholderSvg(180, 270)}" alt="" loading="lazy" onerror="this.onerror=null;this.src=placeholderSvg(180,270)">
@@ -2839,12 +2958,12 @@ function removeHistory(key) {
 }
 function refreshVisibleLibrary() {
     updateSidebarCounts();
-    if (!titleOpen && currentGridType && LIBRARY_META[currentGridType]) openLibrary(currentGridType);
+    if (!titleOpen && currentGridType && LIBRARY_META[currentGridType] && !window._cardQuickLite) openLibrary(currentGridType);
     if (currentItem) updateTitleModalActions();
     if (window._heroKey) updateHeroFavBtn();
     // динамическое обновление видимой страницы:
     if (!$('#listView').classList.contains('hidden')) renderList();
-    if (!$('#homeView').classList.contains('hidden') && HOME_DATA) renderHome();
+    if (!$('#homeView').classList.contains('hidden') && HOME_DATA && !window._cardQuickLite) renderHome();
 }
 /* ============================================================
    SEARCH
@@ -4283,46 +4402,6 @@ function closeShortcutsModal() {
     unlockPageScroll();
 }
 
-/* ==== Кнопка «Поделиться» в hero (шаблон не трогаем) ==== */
-const SHARE_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
-function ensureHeroShareBtn() {
-    const fav = $('#heroFavBtn');
-    if (!fav || $('#heroShareBtn')) return;
-    const btn = document.createElement('button');
-    btn.id = 'heroShareBtn';
-    btn.type = 'button';
-    btn.className = 'btn-ghost h-11 px-5 rounded-xl flex items-center gap-2 text-sm';
-    btn.setAttribute('aria-label', 'Поделиться ссылкой');
-    btn.innerHTML = SHARE_ICON + '<span>Поделиться</span>';
-    btn.addEventListener('click', shareCurrentHero);
-    fav.parentNode.insertBefore(btn, fav.nextSibling);
-}
-async function shareCurrentHero() {
-    const it = (typeof heroSlides !== 'undefined' && heroSlides[heroIdx]) || {};
-    const shareData = {
-        title: (it.title || 'MediaServer'),
-        text: (it.title ? it.title + ' \u2014 ' : '') + 'смотреть на MediaServer',
-        url: location.href
-    };
-    try {
-        if (navigator.share) { await navigator.share(shareData); return; }
-        await navigator.clipboard.writeText(shareData.url);
-        toast('Ссылка скопирована');
-    } catch (err) {
-        if (err && err.name === 'AbortError') return; // пользователь отменил системный диалог
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = shareData.url;
-            ta.style.position = 'fixed'; ta.style.opacity = '0';
-            document.body.appendChild(ta); ta.select();
-            document.execCommand('copy'); ta.remove();
-            toast('Ссылка скопирована');
-        } catch (e2) {
-            toast('Не удалось скопировать ссылку', 'error');
-        }
-    }
-}
-
 /* ==== Кольцо прогресса скролла на кнопке «Наверх» ==== */
 function ensureScrollProgressRing() {
     const btn = $('#scrollTopBtn');
@@ -4389,7 +4468,7 @@ document.addEventListener('load', (e) => {
     const t = e.target;
     if (t instanceof HTMLImageElement &&
         (t.classList.contains('poster-img') || t.classList.contains('sm-photo') ||
-            t.closest('.sm-poster') || t.closest('.person-grid-poster'))) {
+         t.closest('.sm-poster') || t.closest('.person-grid-poster'))) {
         t.classList.add('img-in');
     }
 }, true);
@@ -5680,7 +5759,7 @@ function enableDragScroll(selector) {
                     moved = true;
                     el._dsMoved = true;
                     el.classList.add('is-dragging');
-                    try { window.getSelection().removeAllRanges(); } catch (_) { }   // драг не должен выделять текст
+                    try { window.getSelection().removeAllRanges(); } catch (_) {}   // драг не должен выделять текст
                 }
                 ev.preventDefault();
                 el.scrollLeft = sl - dx;
@@ -5924,7 +6003,7 @@ function openTrailerModal(url, title) {
     } else if (/widgets\.kinopoisk\.ru/.test(url)) {
         let src = url;
         if (!/[?&]autoplay=/.test(src)) src += (src.includes('?') ? '&' : '?') + 'autoplay=1';
-        host.innerHTML = `<iframe src="/api/kp-widget?url=${encodeURIComponent(src)}" allow="autoplay; encrypted-media; fullscreen" allowfullscreen referrerpolicy="no-referrer"></iframe>`;
+        host.innerHTML = `<iframe src="${API_BASE}/api/kp-widget?url=${encodeURIComponent(src)}" allow="autoplay; encrypted-media; fullscreen" allowfullscreen referrerpolicy="no-referrer"></iframe>`;
     } else {
         toast('Не удалось открыть трейлер', 'error');
         return;
@@ -6116,7 +6195,7 @@ function staffCard(t) {
     };
     registerItem(it);
     return renderCard(it, { role: t.role });
-}
+    }
 
 function openStaffPage(staffId) {
     const path = `/actor/${staffId}`;
@@ -6336,7 +6415,7 @@ function enableGoogleFallback(scriptFailed) {
     window._gBtnOn = true;
     amUpdateOauthVis();
     $('#amOauth .am-oauth-btn')?.addEventListener('click', () => {
-        window.location.href = '/api/auth/google/start';
+        window.location.href = (API_BASE || '') + '/api/auth/google/start';
     });
 }
 
@@ -7022,7 +7101,7 @@ async function gateSubmit(e) {
 /* ============================================================
    ФОНОВОЕ СВЕЧЕНИЕ: генерация сфер по высоте страницы
    ============================================================ */
-/* детерминированный ГПСЧ: набор фигур стабилен между перерисовками */
+   /* детерминированный ГПСЧ: набор фигур стабилен между перерисовками */
 function mulberry32(seed) {
     return function () {
         seed |= 0; seed = seed + 0x6D2B79F5 | 0;
@@ -7122,7 +7201,7 @@ function bindEvents() {
     // 220мс на закрытие (курсор успевает доехать до пунктов меню).
     if (window.matchMedia && matchMedia('(hover: hover) and (pointer: fine)').matches) {
         [['topCatWrap', 'topCatMenu', 'topCatBtn'],
-        ['acctWrap', 'acctMenu', 'btnAccount']].forEach(([wrapId, menuId, btnId]) => {
+            ['acctWrap', 'acctMenu', 'btnAccount']].forEach(([wrapId, menuId, btnId]) => {
             const wrap = document.getElementById(wrapId);
             if (!wrap) return;
             let openT = null, closeT = null;
@@ -7250,7 +7329,8 @@ function bindEvents() {
     }, false);
 }
 
-(function init() {
+(async function init() {
+    await apiReady;
     setAccountMode('login');
     updateSidebarCounts();
     buildGenreList();
@@ -7281,7 +7361,6 @@ function bindEvents() {
     applyGlowSetting();
     watchBgGlow();
     bindHeroSlider();
-    ensureHeroShareBtn();
     ensureScrollProgressRing();
     ensureTooltips();
     // скролл рядов не всплывает — ловим на capture

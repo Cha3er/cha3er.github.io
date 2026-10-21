@@ -3226,18 +3226,9 @@ input[type="search"]::-webkit-search-results-decoration {
    Классы с display (aon-item, meta-pill и т.д.) перебивали .hidden.
    Лечим точечно: прячем скрытые элементы только когда на них есть hidden/md:hidden,
    с той же специфичностью, что и классы-конкуренты (два класса). */
-.aon-item.hidden,
-.meta-pill.hidden,
-.ws-item.hidden,
-.tp-btn.hidden,
-.player-btn.hidden,
-.kb-src.hidden,
-.ep-item.hidden,
-.side-link.hidden,
-.aon-dd.hidden,
-.top-dd.hidden,
-.player-side.hidden,
-.player-shell .player-panel .hidden {
+.aon-item.hidden, .meta-pill.hidden, .ws-item.hidden, .tp-btn.hidden,
+.player-btn.hidden, .kb-src.hidden, .ep-item.hidden, .side-link.hidden,
+.aon-dd.hidden, .top-dd.hidden, .player-side.hidden, .player-shell .player-panel .hidden {
     display: none;
 }
 
@@ -8025,7 +8016,6 @@ button.pg-btn:active {
     .aon-icobtn.md\:hidden {
         display: none !important;
     }
-
     #sidebar.md\:hidden {
         display: none;
     }
@@ -8052,7 +8042,6 @@ button.pg-btn:active {
 
 /* уважаем настройку «меньше анимаций» */
 @media (prefers-reduced-motion: reduce) {
-
     .poster-img,
     .sm-poster img,
     .person-grid-poster img,
@@ -8259,39 +8248,14 @@ button.pg-btn:active {
    неподвижным курсором, панель с описанием тайтла вспыхивает на чужой
    карточке и висит до клика. JS вешает body.hover-quiet на время прокрутки
    и снимает его при первом реальном движении мыши. */
-body.hover-quiet .card-info {
-    transform: translateY(102%) !important;
-}
-
-body.hover-quiet .card-play {
-    opacity: 0 !important;
-    transform: translate(-50%, -50%) scale(.6) !important;
-}
-
-body.hover-quiet .poster-card:hover {
-    transform: none;
-}
-
-body.hover-quiet .poster-card:hover .poster-img {
-    transform: none;
-}
-
-body.hover-quiet .poster-card:hover .poster-spotlight {
-    opacity: 0 !important;
-}
-
-body.hover-quiet .poster-card:hover .poster-ring {
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
-}
-
-body.hover-quiet #ttip {
-    opacity: 0 !important;
-    visibility: hidden !important;
-}
-
-body.hover-quiet #personHoverCard {
-    display: none !important;
-}
+body.hover-quiet .card-info { transform: translateY(102%) !important; }
+body.hover-quiet .card-play { opacity: 0 !important; transform: translate(-50%, -50%) scale(.6) !important; }
+body.hover-quiet .poster-card:hover { transform: none; }
+body.hover-quiet .poster-card:hover .poster-img { transform: none; }
+body.hover-quiet .poster-card:hover .poster-spotlight { opacity: 0 !important; }
+body.hover-quiet .poster-card:hover .poster-ring { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+body.hover-quiet #ttip { opacity: 0 !important; visibility: hidden !important; }
+body.hover-quiet #personHoverCard { display: none !important; }
 
 /* Драг ленты не должен выделять текст на карточках */
 .is-dragging,
@@ -8301,7 +8265,154 @@ body.hover-quiet #personHoverCard {
 }
 
 /* Кнопка «Сменить пароль» на время запроса */
-.st-save:disabled {
-    opacity: .55;
-    cursor: wait;
+.st-save:disabled { opacity: .55; cursor: wait; }
+
+/* ============================================================
+   HERO: размытый фон + постер целиком (добавлено)
+   ============================================================ */
+#heroBg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 18%;
+    filter: blur(26px) brightness(.45) saturate(1.25);
+    transform: scale(1.18);
+}
+
+#heroImg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top center;
+    transform: scale(1.03);
+}
+
+/* режим постера: чёткий постер целиком карточкой справа */
+#hero.is-poster #heroImg {
+    inset: auto;
+    right: clamp(16px, 4.5vw, 64px);
+    bottom: 28px;
+    width: auto;
+    height: 86%;
+    max-width: 28vw;
+    transform: none;
+    object-fit: contain;
+    object-position: center;
+    border-radius: 14px;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255, 255, 255, .08);
+    z-index: 1;
+}
+
+/* мобильный: постер-карточка в правом верхнем углу, текст не перекрывает */
+@media (max-width: 767px) {
+    #hero.is-poster #heroImg {
+        top: 8%;
+        bottom: auto;
+        right: 12px;
+        height: 40%;
+        max-width: 32vw;
+        border-radius: 12px;
+        box-shadow: 0 8px 26px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255, 255, 255, .08);
+    }
+}
+
+/* текст, точки и стрелки — выше постера */
+#hero .hero-content {
+    z-index: 2;
+}
+
+#hero #heroDots {
+    z-index: 2;
+}
+
+#hero .hero-arrow {
+    z-index: 2;
+}
+
+/* плавная смена слайдов */
+#heroBg,
+#heroImg {
+    transition: opacity .4s ease;
+}
+
+#hero.is-switching #heroBg,
+#hero.is-switching #heroImg {
+    opacity: 0;
+}
+
+/* ============================================================
+   КАРТОЧКИ: быстрые действия при наведении (добавлено)
+   ============================================================ */
+.card-quick {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%) translateX(8px);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease, transform .18s ease;
+    z-index: 6;
+}
+
+.poster-card:hover .card-quick,
+.poster-card:focus-within .card-quick {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(-50%) translateX(0);
+}
+
+/* после прокрутки лент ховер гасится — кнопки тоже */
+body.hover-quiet .card-quick,
+body.hover-clear .card-quick {
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+.cq-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: rgba(12, 12, 16, .78);
+    border: 1px solid rgba(255, 255, 255, .14);
+    color: #d4d4d8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: background .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
+}
+
+.cq-btn:hover {
+    background: rgba(124, 77, 255, .45);
+    border-color: rgba(124, 77, 255, .65);
+    color: #fff;
+    transform: scale(1.08);
+}
+
+.cq-btn.is-on {
+    background: rgba(124, 77, 255, .92);
+    border-color: rgba(124, 77, 255, .92);
+    color: #fff;
+}
+
+.cq-btn.cq-fav.is-on {
+    background: rgba(244, 63, 94, .92);
+    border-color: rgba(244, 63, 94, .92);
+}
+
+/* тач-устройства: ховера нет — кнопки не показываем */
+@media (hover: none),
+(pointer: coarse) {
+    .card-quick {
+        display: none;
+    }
 }
