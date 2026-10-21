@@ -6406,11 +6406,32 @@ function loadGsiScript(cb) {
 function enableGoogleFallback(scriptFailed) {
     if (googleFallback) return;
     googleFallback = true;
-    // Кнопка теперь всегда в разметке (без дёрганий): при недоступности
-    // Google она просто никуда не ведёт — прячем лишь прозрачный слой GIS,
-    // чтобы он не съедал клики и не мешал.
-    if (scriptFailed) toast('Вход через Google сейчас недоступен — используй логин/пароль', 'error');
+    // Кнопка всегда в разметке (без дёрганий). Прячем прозрачный слой GIS,
+    // когда рендер не состоялся — иначе он невидимо съедает клики.
+    $('#amOauth .am-oauth-gis')?.classList.add('hidden');
+    if (scriptFailed) {
+        toast('Не удалось подключить вход Google — проверь блокировщик рекламы (он может блокировать accounts.google.com) или войди логином/паролем', 'error');
+    }
 }
+
+// Клик по нашей кнопке: если настоящая кнопка Google не отрисовалась,
+// сами открываем вход (popup) или объясняем, почему не работает.
+function bindGoogleButtonFallback() {
+    $('#amOauth .am-oauth-btn')?.addEventListener('click', () => {
+        if (typeof window.google !== 'undefined' && window.google?.accounts?.id) {
+            try {
+                window.google.accounts.id.prompt();   // окно входа Google
+                return;
+            } catch (e) { /* ниже объяснение */ }
+        }
+        if (isPrivateHost(location.hostname)) {
+            toast('Вход через Google недоступен на локальном адресе — открой https://cha3er.github.io и войди там', 'error');
+            return;
+        }
+        toast('Вход через Google сейчас недоступен — попробуй обновить страницу или войди логином/паролем', 'error');
+    });
+}
+bindGoogleButtonFallback();
 
 function isPrivateHost(h) {
     h = String(h || location.hostname || '').toLowerCase();
