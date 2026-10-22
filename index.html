@@ -5,6 +5,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>MediaServer — Тёмный кинозал</title>
+    <script>
+        /* Колбэк Google OAuth (/api/auth/google/callback). GitHub Pages отдаёт
+           сюда 404.html — этот инлайн-скрипт срабатывает ДО отрисовки сайта:
+           мгновенно передаёт код в окно-инициатор (popup) и закрывает себя,
+           либо при обычной навигации сразу пересылает код на бэкенд. */
+        (function () {
+            try {
+                if (location.pathname !== '/api/auth/google/callback') return;
+                var q = new URLSearchParams(location.search);
+                var code = q.get('code');
+                document.title = 'Вход через Google…';
+                if (window.opener && window.opener !== window && !window.opener.closed) {
+                    try { window.opener.postMessage({ source: 'google-oauth', code: code, state: q.get('state') }, location.origin); } catch (e) { }
+                } else if (code) {
+                    var qs = q.toString();
+                    fetch(location.origin + '/api-url.json').then(function (r) { return r.json(); }).then(function (j) {
+                        if (j && j.api) { location.replace(String(j.api).replace(/\/+$/, '') + '/api/auth/google/callback?' + qs); }
+                    }).catch(function () { window.close(); });
+                }
+                document.write('<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><title>Вход через Google…</title></head><body style="margin:0;background:#0b0d12"></body></html>');
+                document.close();
+                setTimeout(function () { window.close(); }, 250);
+            } catch (e) { /* не мешаем обычной работе сайта */ }
+        })();
+    </script>
     <meta name="description" content="MediaServer — фильмы, сериалы и аниме в одном месте.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1768,7 +1793,7 @@
             </div>
         </div>
     </div>
-    <script src="/static/js/app.09a91028bb.js"></script>
+    <script src="/static/js/app.f1d1c33a57.js"></script>
 </body>
 
 </html>

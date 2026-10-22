@@ -6467,7 +6467,8 @@ async function startGooglePopup(linkMode) {
     const win = window.open(
         'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString(),
         'google_oauth',
-        'width=480,height=640'
+        'width=480,height=640,left=' + Math.max(0, Math.round(((screen.availWidth || screen.width) - 480) / 2 + (screen.availLeft || 0))) +
+        ',top=' + Math.max(0, Math.round(((screen.availHeight || screen.height) - 640) / 2 + (screen.availTop || 0)))
     );
     if (!win) {
         toast('Браузер заблокировал окно входа — разреши всплывающие окна для сайта', 'error');
@@ -6494,22 +6495,57 @@ window.addEventListener('message', (e) => {
 });
 
 async function finishGooglePopup(oauthCode) {
+    if (googleBusy) return;
+    googleBusy = true;
+    $('#accountError')?.classList.add('hidden');
     try {
         const res = await fetch((API_BASE || '') + '/api/account/google/oauth', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ code: oauthCode }),
+            body: JSON.stringify({ code: oauthCode, access: $('#amCodeField input')?.value.trim() || '' }),
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || 'Google не принял вход');
-        // дальше — обычный процесс входа: тот же обработчик, что и у GIS-кнопки
-        await googleLogin(data.id_token, $('#amCodeField input')?.value.trim() || '');
+        if (res.status === 403 && data.need_code && data.id_token) {
+            // закрытый режим: нужен код доступа — показываем поле ввода,
+            // повторный вход сделает continueGoogleWithCode (id_token валиден повторно)
+            googleCredPending = data.id_token;
+            $('#amGcode')?.classList.remove('hidden');
+            $('#amGcodeInput')?.focus();
+            const er = $('#accountError');
+            if (er) { er.textContent = data.detail || 'Нужен код доступа'; er.classList.remove('hidden'); }
+            return;
+        }
+        if (!res.ok) throw new Error(data.detail || 'Ошибка входа через Google');
+        googleCredPending = null;
+        $('#amGcode')?.classList.add('hidden');
+        applyPopupLogin(data);
     } catch (err) {
         const er = $('#accountError');
-        if (er) { er.textContent = err.message || 'Ошибка входа через Google'; er.classList.remove('hidden'); }
+        if (er) { er.textContent = err.message || 'Ошибка'; er.classList.remove('hidden'); }
         toast(err.message || 'Ошибка входа через Google', 'error');
+    } finally {
+        googleBusy = false;
     }
+}
+
+/* Вход прислал аккаунт — тот же завершающий блок, что в googleLogin,
+   но без лишнего повторного запроса состояния. */
+async function applyPopupLogin(data) {
+    try {
+        accountUser = data.user;
+        const boot = await fetch('/api/account/bootstrap', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ library: libraryState, history: recentlyViewed, progress: localProgressState() }),
+        });
+        if (boot.ok) applyAccountState(await boot.json());
+        accountRevision = -1;
+        startAccountPolling();
+        updateAccountModal();
+        toast(data.new ? 'Добро пожаловать, ' + accountUser.username + ' 👋'
+                       : 'С возвращением, ' + accountUser.username + ' 👋');
+        setTimeout(closeAccountModal, 350);
+    } catch (e) { /* падение добивки не рушит вход — сессия уже установлена */ }
 }
 
 async function finishGoogleLink(oauthCode) {
