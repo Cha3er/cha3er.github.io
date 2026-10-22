@@ -32,12 +32,34 @@ const _rawFetch = window.fetch.bind(window);
         apiReadyResolve(true);
     }
 })();
+/* ===== Токен сессии: localStorage (переживает смену домена туннеля и работает
+   с GitHub Pages, где сторонние cookie блокируются) ===== */
+function getAuthToken() {
+    try { return (localStorage.getItem('mediaserver_token') || '').trim(); } catch (e) { return ''; }
+}
+function setAuthToken(t) {
+    try {
+        const v = ('' + (t || '')).trim();
+        if (v) localStorage.setItem('mediaserver_token', v);
+        else localStorage.removeItem('mediaserver_token');
+    } catch (e) { }
+}
 window.fetch = function (input, init) {
     try {
-        if (typeof input === 'string' && API_BASE) {
-            if (input.startsWith('/api/') || input.startsWith('/uploads/')) {
+        if (typeof input === 'string' && (input.startsWith('/api/') || input.startsWith('/uploads/'))) {
+            if (API_BASE) {
                 input = API_BASE + input;
                 init = { credentials: 'include', ...(init || {}) };
+            }
+            const tok = getAuthToken();
+            if (tok) {
+                init = { ...(init || {}) };
+                if (init.headers && typeof init.headers.set === 'function') {
+                    // Headers-инстанс — дописываем в него
+                    try { init.headers.set('Authorization', 'Bearer ' + tok); } catch (e) { }
+                } else {
+                    init.headers = { ...(init.headers || {}), Authorization: 'Bearer ' + tok };
+                }
             }
         }
     } catch (e) { /* игнорируем — fallback на оригинальный fetch */ }
@@ -77,6 +99,22 @@ const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 
 let HOME_DATA = null;
+/* ===== Гость: личные данные (список/история/прогресс) не храним вообще.
+   Если нет маркера владельца (не выполнен вход) — чистим старые данные ===== */
+const GUEST_DATA_KEYS = ['mediaserver_library', 'mediaserver_recent', 'mediaserver_progress',
+    'mediaserver_runtime', 'mediaserver_deleted'];
+function wipeGuestStorageOnly() {
+    for (const k of GUEST_DATA_KEYS) {
+        try { localStorage.removeItem(k); } catch (e) { }
+    }
+    try { localStorage.removeItem('mediaserver_data_owner'); } catch (e) { }
+}
+(function guestDataBoot() {
+    let owner = '';
+    try { owner = (localStorage.getItem('mediaserver_data_owner') || '').trim(); } catch (e) { }
+    if (!owner) wipeGuestStorageOnly();
+})();
+
 let libraryState = safeParse(localStorage.getItem('mediaserver_library'), {});
 let recentlyViewed = safeParse(localStorage.getItem('mediaserver_recent'), []);
 let deletedState = safeParse(localStorage.getItem('mediaserver_deleted'), { library: {}, history: {}, progress: {} });
@@ -86,6 +124,16 @@ let accountMode = 'login';
 let accountActionQueue = Promise.resolve();
 let accountPendingActions = 0;
 let accountPollTimer = null;
+
+/* Полный сброс личного состояния в памяти и хранилище (выход из аккаунта,
+   истёкшая сессия у гостя) */
+function clearGuestData() {
+    libraryState = {};
+    recentlyViewed = [];
+    deletedState = { library: {}, history: {}, progress: {} };
+    wipeGuestStorageOnly();
+    setAuthToken('');
+}
 
 let currentItem = null;
 let currentPlayerButtons = [];
@@ -3947,6 +3995,7 @@ function resetCatalogFilters() {
    ============================================================ */
 function rememberRecentlyViewed(it) {
     if (!it || !it.title) return;
+    if (!accountUser) return; // гость не сохраняет историю
     const newKeys = new Set(itemKeys(it));
     recentlyViewed = recentlyViewed.filter(x => !itemKeys(x).some(k => newKeys.has(k)));
     recentlyViewed.unshift({ ...it, historyUpdatedAt: Date.now() });
@@ -4515,8 +4564,17 @@ function updateTitleModalActions() {
         }
     }
 }
+/* Гостю сохранять/менять личное нельзя — предлагаем войти или зарегистрироваться */
+function requireAccount() {
+    if (accountUser) return true;
+    toast('Войдите в аккаунт, чтобы сохранять тайтлы', 'error');
+    openAccountModal();
+    return false;
+}
+
 function setLibraryStatus(type, it) {
     if (!it) return;
+    if (!requireAccount()) return;
     const key = itemKey(it), now = Date.now();
     if (!libraryState[type]) libraryState[type] = {};
     const enable = !libraryState[type][key];
@@ -4567,6 +4625,7 @@ function clickRating(n) {
 }
 function setRating(n) {
     if (!currentItem) return;
+    if (!requireAccount()) return;
     const key = itemKey(currentItem), now = Date.now();
     if (!libraryState.ratings) libraryState.ratings = {};
     if (n && n >= 1 && n <= 5) libraryState.ratings[key] = { item: JSON.parse(JSON.stringify(currentItem)), rating: n, updatedAt: now };
@@ -4584,6 +4643,7 @@ function parseRuntimeMin(s) {
 }
 function rememberRuntime(it, minutes) {
     if (!it || !minutes) return;
+    if (!accountUser) return; // гость не сохраняет ничего
     try {
         const data = safeParse(localStorage.getItem('mediaserver_runtime'), {});
         data[itemKey(it)] = minutes;
@@ -4601,11 +4661,13 @@ function fmtMinutes(min) {
 
 function toggleFavorite() { setLibraryStatus('favorites', currentItem); }
 function setWatchStatus(type) {
+    if (!requireAccount()) return;
     setLibraryStatus(type, currentItem);
     toast('Отмечено: ' + (WS_META[type] ? WS_META[type].label.toLowerCase() : type));
 }
 function clearWatchStatus() {
     if (!currentItem) return;
+    if (!requireAccount()) return;
     ['watching', 'planned', 'watched', 'dropped', 'onhold'].forEach(t => {
         if (isInLibrary(t, currentItem)) setLibraryStatus(t, currentItem);
     });
@@ -4644,9 +4706,9 @@ function markUndeleted(bucket, key) {
     if (deletedState[bucket]) delete deletedState[bucket][key];
     saveDeleted();
 }
-function saveLibrary() { try { localStorage.setItem('mediaserver_library', JSON.stringify(libraryState)); } catch (e) { } }
-function saveRecent() { try { localStorage.setItem('mediaserver_recent', JSON.stringify(recentlyViewed)); } catch (e) { } }
-function saveDeleted() { try { localStorage.setItem('mediaserver_deleted', JSON.stringify(deletedState)); } catch (e) { } }
+function saveLibrary() { if (!accountUser) return; try { localStorage.setItem('mediaserver_library', JSON.stringify(libraryState)); } catch (e) { } }
+function saveRecent() { if (!accountUser) return; try { localStorage.setItem('mediaserver_recent', JSON.stringify(recentlyViewed)); } catch (e) { } }
+function saveDeleted() { if (!accountUser) return; try { localStorage.setItem('mediaserver_deleted', JSON.stringify(deletedState)); } catch (e) { } }
 
 /* ============================================================
    RESOLVE SOURCES / KP ID
@@ -5631,6 +5693,7 @@ function destroyPlayer() {
 function progressKey(it) { return itemKey(it); }
 function saveProgress(episode, time, duration) {
     if (!currentItem || !Number.isFinite(time)) return;
+    if (!accountUser) return; // гость не сохраняет прогресс
     const key = progressKey(currentItem);
     const data = safeParse(localStorage.getItem('mediaserver_progress'), {});
     data[key] = { episode: Number(episode) || 1, season: window._kbSeason || 0, translation: window._kbTranslation || '', time: Math.max(0, Math.floor(time)), duration: Number.isFinite(duration) ? Math.floor(duration) : 0, updatedAt: Date.now() };
@@ -6927,6 +6990,7 @@ async function finishGooglePopup(oauthCode) {
    но без лишнего повторного запроса состояния. */
 async function applyPopupLogin(data) {
     try {
+        if (data && data.token) setAuthToken(data.token);
         accountUser = data.user;
         const boot = await fetch('/api/account/bootstrap', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -7049,6 +7113,7 @@ async function googleLogin(credential, code) {
         if (!res.ok) throw new Error(data.detail || 'Ошибка входа через Google');
         googleCredPending = null;
         $('#amGcode')?.classList.add('hidden');
+        if (data.token) setAuthToken(data.token);
         accountUser = data.user;
         const boot = await fetch('/api/account/bootstrap', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -7205,6 +7270,7 @@ async function amRegFinish() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Ошибка');
+        if (data.token) setAuthToken(data.token);
         accountUser = data.user;
         await amFinishAuth();
         const dn = $('#amDoneNick');
@@ -7295,7 +7361,11 @@ function applyAccountState(d) {
     if (!d) return;
     const hadUser = !!accountUser;
     if (d.library) libraryState = d.library;
-    if (d.user) accountUser = d.user;   // ник/почта/Google свежие после смены
+    if (d.user) {
+        accountUser = d.user;   // ник/почта/Google свежие после смены
+        // маркер владельца личных данных в этом браузере
+        try { localStorage.setItem('mediaserver_data_owner', String(accountUser.username || accountUser.id || '1')); } catch (e) { }
+    }
     if (d.history) recentlyViewed = d.history;
     if (d.progress) localStorage.setItem('mediaserver_progress', JSON.stringify(d.progress));
     if (d.deleted) deletedState = d.deleted;
@@ -7337,6 +7407,7 @@ async function fetchAccountState(force) {
     try {
         const res = await fetch(`/api/account/state?since=${accountRevision}`, { cache: 'no-store' });
         if (res.status === 304) return;
+        if (res.status === 401) { sessionExpired(); return; }
         if (!res.ok) return;
         applyAccountState(await res.json());
     } catch (e) { console.warn('Account state poll failed', e); }
@@ -7362,6 +7433,7 @@ async function submitAccount(e) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Ошибка');
+        if (data.token) setAuthToken(data.token);
         accountUser = data.user;
         await amFinishAuth();
         toast('С возвращением, ' + accountUser.username + ' 👋');
@@ -7393,12 +7465,9 @@ async function logoutAccount() {
     try { await fetch('/api/account/logout', { method: 'POST' }); } catch (e) { }
     accountUser = null; accountRevision = 0; stopAccountPolling();
     // выходим начисто: локальные библиотека/история/прогресс не должны
-    // переживать выход — следующий пользователь их не увидит
-    ['mediaserver_library', 'mediaserver_recent', 'mediaserver_progress',
-        'mediaserver_runtime', 'mediaserver_deleted'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { } });
-    libraryState = {};
-    recentlyViewed = [];
-    deletedState = { library: {}, history: {}, progress: {} };
+    // переживать выход — следующий пользователь их не увидит.
+    // clearGuestData() также снимает маркер владельца данных и токен сессии
+    clearGuestData();
     window._profileData = { bio: '', banner: '', avatar: '' };
     listPage = 1;
     lsHistPage = 1;
@@ -7406,7 +7475,13 @@ async function logoutAccount() {
     updateAccountModal();
     closeLogoutDialog();
     toast('Вы вышли из аккаунта');
-    // перерисовываем открытые разделы, чтобы не показывать чужие/старые данные
+    // гость не видит «Продолжить смотреть» и личные разделы — перерисовываем
+    sessionExpiredRefresh();
+}
+/* Перерисовка открытых разделов после выхода/истечения сессии,
+   чтобы не показывать чужие или оставшиеся личные данные */
+function sessionExpiredRefresh() {
+    if (!$('#homeView').classList.contains('hidden') && HOME_DATA && !window._cardQuickLite) renderHome();
     if (!$('#gridView').classList.contains('hidden') && currentGridType) {
         if (currentGridType === 'catalog') applyCatalogFilters();
         else if (LIBRARY_META[currentGridType]) openLibrary(currentGridType);
@@ -7414,6 +7489,17 @@ async function logoutAccount() {
     if (!$('#listView').classList.contains('hidden')) renderList();
     if (!$('#profileView').classList.contains('hidden')) renderProfile();
     if (window._heroKey) updateHeroFavBtn();
+}
+function sessionExpired() {
+    if (!accountUser) return;
+    stopAccountPolling();
+    accountUser = null; accountRevision = 0;
+    clearGuestData();
+    window._profileData = { bio: '', banner: '', avatar: '' };
+    updateSidebarCounts();
+    updateAccountModal();
+    toast('Сессия истекла — войдите заново', 'error');
+    sessionExpiredRefresh();
 }
 function confirmDeleteAccount() {
     if (!confirm('Удалить аккаунт без возможности восстановления? Библиотека и история на сервере будут удалены.')) return;
@@ -7425,10 +7511,7 @@ async function deleteAccountNow() {
         const d = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(d.detail || 'Не удалось удалить аккаунт');
         accountUser = null; accountRevision = 0; stopAccountPolling();
-        libraryState = {}; recentlyViewed = [];
-        localStorage.removeItem('mediaserver_library');
-        localStorage.removeItem('mediaserver_recent');
-        localStorage.removeItem('mediaserver_progress');
+        clearGuestData();
         updateAccountModal();
         closeAccountModal();
         refreshVisibleLibrary();
@@ -7440,8 +7523,20 @@ async function deleteAccountNow() {
 async function initAccount() {
     try {
         const res = await fetch('/api/account/me', { cache: 'no-store' });
-        if (!res.ok) return;
-        accountUser = (await res.json()).user;
+        if (!res.ok) {
+            // гость (или просроченная сессия): никаких личных данных
+            if (res.status === 401) {
+                clearGuestData();
+                updateSidebarCounts();
+                sessionExpiredRefresh();
+            }
+            return;
+        }
+        const me = await res.json();
+        // сервер отдал токен сессии — сохраняем, дальше ходим с
+        // Authorization: Bearer (вход переживает смену домена туннеля)
+        if (me && me.token) setAuthToken(me.token);
+        accountUser = me.user;
         updateAccountModal();
         // аккаунт загрузился ПОСЛЕ того, как роутер уже отрисовал профиль
         // при старте страницы — перерисовываем с верным именем
@@ -7644,6 +7739,7 @@ async function gateSubmit(e) {
         });
         const d = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(d.detail || 'Ошибка');
+        if (d && d.token) setAuthToken(d.token);
         location.reload();
     } catch (ex) {
         err.textContent = ex.message; err.classList.remove('hidden');
