@@ -16,17 +16,19 @@
                 var q = new URLSearchParams(location.search);
                 var code = q.get('code');
                 document.title = 'Вход через Google…';
+                /* Мгновенно останавливаем разбор страницы — сайт в окне
+                   не отрисовывается вообще, остаётся тёмный фон. */
+                try { window.stop(); } catch (e) { }
+                var qs = q.toString();
                 if (window.opener && window.opener !== window && !window.opener.closed) {
                     try { window.opener.postMessage({ source: 'google-oauth', code: code, state: q.get('state') }, location.origin); } catch (e) { }
                 } else if (code) {
-                    var qs = q.toString();
                     fetch(location.origin + '/api-url.json').then(function (r) { return r.json(); }).then(function (j) {
                         if (j && j.api) { location.replace(String(j.api).replace(/\/+$/, '') + '/api/auth/google/callback?' + qs); }
                     }).catch(function () { window.close(); });
                 }
-                document.write('<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><title>Вход через Google…</title></head><body style="margin:0;background:#0b0d12"></body></html>');
-                document.close();
-                setTimeout(function () { window.close(); }, 250);
+                document.documentElement.innerHTML = '<head><style>html,body{margin:0;height:100%;background:#0b0d12}</style></head><body></body>';
+                setTimeout(function () { window.close(); }, 120);
             } catch (e) { /* не мешаем обычной работе сайта */ }
         })();
     </script>
@@ -1793,7 +1795,7 @@
             </div>
         </div>
     </div>
-    <script src="/static/js/app.f1d1c33a57.js"></script>
+    <script src="/static/js/app.2fb51950a0.js"></script>
 </body>
 
 </html>

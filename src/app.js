@@ -6490,6 +6490,7 @@ window.addEventListener('message', (e) => {
         toast('Просроченная попытка входа Google — попробуй ещё раз', 'error');
         return;
     }
+    toast('Аккаунт выбран — входим…', 'info');
     if (isLink) finishGoogleLink(d.code);
     else finishGooglePopup(d.code);
 });
