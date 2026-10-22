@@ -593,11 +593,12 @@ function titleSkeletonHTML() {
   </div>
 </div>
 </div>
-<div class="mt-10 md:mt-14">
-<div class="h-6 w-40 skeleton rounded mb-4"></div>
+<div class="mt-8 md:mt-10">
 <div class="player-shell">
-  <div class="player-frame skeleton"></div>
-  <div class="player-panel"><div class="h-8 w-64 skeleton rounded-lg"></div></div>
+  <div class="player-main">
+    <div class="player-frame skeleton"></div>
+    <div class="player-panel"><div class="player-bar"><div class="h-10 w-60 skeleton rounded-lg"></div></div></div>
+  </div>
 </div>
 </div>
 </div>`;
@@ -4253,29 +4254,27 @@ function renderTitleModalBody(it, playerButtons) {
 </div>
 
 <!-- ПЛЕЕР -->
-<section id="playerSection" class="mt-10 md:mt-14">
-<div class="flex items-center gap-2.5 mb-4">
-<span class="marquee-rule" style="width:22px"></span>
-<h2 class="font-display uppercase text-lg md:text-xl tracking-wide text-ink">Смотреть</h2>
-</div>
+<section id="playerSection" class="mt-8 md:mt-10">
 <div class="player-shell" id="playerShell">
   <div class="player-main">
     <div id="playerContainer" class="player-frame"></div>
     <div class="player-panel">
-      <div class="player-src-wrap" id="playerSrcWrap">
-        <button type="button" id="playerSrcBtn" class="player-btn btn-primary" onclick="togglePlayerSources()" aria-haspopup="listbox" aria-expanded="false">
-          ${icon('clapper')}<span id="playerSrcLabel">Источник</span><svg class="ps-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-        </button>
-        <div id="playerSrcPanel" class="player-src-panel hidden" role="listbox" aria-label="Выбор источника"></div>
+      <div class="player-bar">
+        <div class="player-src-wrap" id="playerSrcWrap">
+          <button type="button" id="playerSrcBtn" class="player-btn btn-primary" onclick="togglePlayerSources()" aria-haspopup="listbox" aria-expanded="false">
+            ${icon('clapper')}<span id="playerSrcLabel">Источник</span><svg class="ps-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div id="playerSrcPanel" class="player-src-panel hidden" role="listbox" aria-label="Выбор источника"></div>
+        </div>
+        <div id="anilibriaControls" class="player-controls hidden"></div>
+        <div id="extControls" class="player-controls hidden"></div>
       </div>
-      <div id="anilibriaControls" class="hidden"></div>
-      <div id="extControls" class="hidden"></div>
       <div id="playerHint"></div>
     </div>
   </div>
   <aside id="epSidebar" class="player-side" aria-label="Эпизоды">
     <div class="ep-side-head">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H3"/><path d="M10 12H3"/><path d="M10 19H3"/><path d="M15 12.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997a1 1 0 0 1-1.517-.86z"/></svg>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H3"/><path d="M10 12H3"/><path d="M10 19H3"/><path d="M15 12.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997a1 1 0 0 1-1.517-.86z"/></svg>
         <span id="epSideTitle">Эпизоды</span> <span class="n" id="epCount"></span>
       </div>
     <div id="epList" class="ep-list"></div>
@@ -5359,15 +5358,12 @@ function renderExtBottom(entry, sel, info, seasonsTmdb) {
     ec.classList.remove('hidden');
     let html = '';
     if (seasons.length > 1) {
-        html += `<div class="flex flex-wrap items-center gap-2">
-        <span class="text-[11px] text-faint font-semibold uppercase tracking-wider shrink-0">Сезоны</span>
-        <div class="player-seg">
+        html += `<div class="player-seg">
           ${seasons.map(s => `<button type="button" class="kb-src ep-sz ${Number(s.season) === Number(sel.season) ? 'is-active' : ''}" data-sz="${Number(s.season)}">${Number(s.season)}</button>`).join('')}
-        </div></div>`;
+        </div>`;
     }
     if (total > 1) {
-        html += `<div class="flex items-center gap-2 min-w-0 mt-1">
-        <span class="text-[11px] text-faint font-semibold uppercase tracking-wider shrink-0 hidden sm:inline">Серии <span class="n">${total}</span></span>
+        html += `<div class="ep-strip">
         <button type="button" class="ep-arrow" onclick="extScrollNums(-1)" aria-label="Серии назад">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
@@ -5555,7 +5551,7 @@ function mountSourceIframe(entry) {
         const hint = $('#playerHint');
         if (!hint || kbLastTime > 0) return;
         const others = playerSources.filter(s => s.ok && s.key !== entry.key);
-        hint.innerHTML = `<div class="text-xs text-muted bg-white/5 border border-border rounded-xl p-3.5 flex gap-2">${icon('info')}<span>Плеер долго не запускается — возможно, блокировщик рекламы мешает. Выбери другой источник кнопкой выше${others.length ? ': ' + others.slice(0, 4).map(s => s.label).join(', ') : ''}.</span></div>`;
+        hint.innerHTML = `<div class="player-hint">${icon('info')}<span>Плеер долго не запускается — возможно, блокировщик рекламы мешает. Выбери другой источник кнопкой выше${others.length ? ': ' + others.slice(0, 4).map(s => s.label).join(', ') : ''}.</span></div>`;
     }, 12000);
 }
 
@@ -5698,14 +5694,10 @@ async function loadAnilibria(aliasOrId) {
 
         // панель: качество + выбор серий со стрелками
         controls.innerHTML = `
-<div class="flex flex-wrap items-center gap-2">
-<span class="text-[11px] text-faint font-semibold uppercase tracking-wider">Качество</span>
 <div class="player-seg">
   ${['hls_1080', 'hls_720', 'hls_480'].map(q => `<button type="button" class="kb-src q-btn" data-q="${q}" onclick="aniSetQuality('${q}')">${q.replace('hls_', '')}p</button>`).join('')}
 </div>
-</div>
-<div class="flex items-center gap-2 min-w-0">
-<span class="text-[11px] text-faint font-semibold uppercase tracking-wider shrink-0 hidden sm:inline">Эпизоды</span>
+<div class="ep-strip">
 <button type="button" class="ep-arrow" onclick="aniScrollNums(-1)" aria-label="Серии назад">
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
 </button>
@@ -5716,7 +5708,7 @@ async function loadAnilibria(aliasOrId) {
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
 </button>
 </div>
-<p id="aniStatus" class="text-xs text-faint">Нажмите Play для воспроизведения</p>`;
+<p id="aniStatus" class="player-hint-row">Нажмите Play для воспроизведения</p>`;
         enableHorizontalScroll('.ep-nums');
         enableDragScroll('.ep-nums');
 
