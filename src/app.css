@@ -2223,6 +2223,128 @@ input[type="search"]::-webkit-search-results-decoration {
     background: transparent;
 }
 
+/* ===== Кнопка-дропдаун выбора источника (как у animeon) ===== */
+.player-src-wrap {
+    position: relative;
+    align-self: flex-start;
+}
+
+#playerSrcBtn {
+    height: 38px;
+    padding: 0 14px;
+}
+
+#playerSrcBtn .ps-chev {
+    transition: transform .15s ease;
+    opacity: .85;
+}
+
+#playerSrcBtn[aria-expanded="true"] .ps-chev {
+    transform: rotate(180deg);
+}
+
+#playerSrcBtn.is-off,
+#playerSrcBtn:disabled {
+    background: rgba(255, 255, 255, .07);
+    color: #9d9da6;
+    box-shadow: none;
+    cursor: not-allowed;
+}
+
+.player-src-panel {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    min-width: 250px;
+    max-height: 340px;
+    overflow-y: auto;
+    z-index: 60;
+    background: #101014;
+    border: 1px solid rgba(255, 255, 255, .10);
+    border-radius: 14px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
+}
+
+.ps-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: 0;
+    background: transparent;
+    color: #d4d4d8;
+    font-size: 13.5px;
+    font-weight: 500;
+    text-align: left;
+    transition: .12s ease;
+}
+
+.ps-item svg {
+    color: #8b8b93;
+    flex: none;
+}
+
+.ps-item:hover {
+    background: rgba(255, 255, 255, .06);
+    color: #fff;
+}
+
+.ps-item .ps-nm {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ps-item.is-active {
+    color: #fff;
+    background: rgba(124, 77, 255, .18);
+}
+
+.ps-item.is-active svg {
+    color: #a98bff;
+}
+
+.ps-check {
+    flex: none;
+    color: #a98bff;
+    display: inline-flex;
+}
+
+.ps-item.is-off {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+.ps-item.is-off:hover {
+    background: transparent;
+    color: #d4d4d8;
+}
+
+.ps-item.is-off .ps-item-icon {
+    color: #6f6f77;
+}
+
+.ps-off {
+    flex: none;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #8b8b93;
+    background: rgba(255, 255, 255, .05);
+    border: 1px solid rgba(255, 255, 255, .08);
+    padding: 1px 7px;
+    border-radius: 999px;
+}
+
 .kb-src {
     display: inline-flex;
     align-items: center;

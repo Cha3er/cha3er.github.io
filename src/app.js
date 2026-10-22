@@ -89,13 +89,13 @@ let accountPollTimer = null;
 
 let currentItem = null;
 let currentPlayerButtons = [];
-let selectedKinoboxSource = localStorage.getItem('mediaserver_kinobox_source') || 'auto';
+let playerSources = [];          // [{key,label,icon,ok,url,mount,note}]
+let activeSourceKey = '';
+let playerSrcPanelOpen = false;
 let titlePageRequestId = 0;
 let extraRequestId = 0;
 let hlsInstance = null;
-let kinoboxLoaded = false;
 let kinoboxHintTimer = null;
-let kbMenuPollTimer = null;
 let searchDebounceTimer = null;
 let searchRequestId = 0;
 let currentGridType = null;
@@ -4005,6 +4005,9 @@ async function openTitleModal(it) {
         try { history.replaceState({ t: itemKey(currentItem) }, '', titleHref(currentItem)); } catch (e) { }
     }
 
+    /* Список источников для кнопки-дропдауна (как у animeon):
+       свои (kodik/anilibria из резолва) + плееры Kinobox API
+       (veoveo/alloha/turbo/collaps...), недоступные — серыми. */
     const playerButtons = [];
     if (srcs.kinobox) playerButtons.push({ key: 'kinobox', label: 'Kinobox', icon: 'clapper' });
     if (srcs.kodik) playerButtons.push({ key: 'kodik', label: 'Kodik', icon: 'layers' });
@@ -4014,7 +4017,7 @@ async function openTitleModal(it) {
     if (reqId !== titlePageRequestId) return;
     renderTitleModalBody(currentItem, playerButtons);
 
-    if (playerButtons.length) switchPlayer(playerButtons[0].key);
+    initPlayerSources(reqId);
 
     // @@:NO-KP — тайтла нет в Кинопоиске: никаких «Данные недоступны»,
     // показываем факты из наших данных и прячем пустые секции
@@ -4255,15 +4258,16 @@ function renderTitleModalBody(it, playerButtons) {
 <span class="marquee-rule" style="width:22px"></span>
 <h2 class="font-display uppercase text-lg md:text-xl tracking-wide text-ink">Смотреть</h2>
 </div>
-${playerButtons.length ? `
-<div class="player-shell ${playerButtons.length > 1 ? 'has-alt' : ''}" id="playerShell">
+<div class="player-shell" id="playerShell">
   <div class="player-main">
     <div id="playerContainer" class="player-frame"></div>
     <div class="player-panel">
-      <div class="player-seg">
-        ${playerButtons.map((b, i) => `<button onclick="switchPlayer('${b.key}')" id="btn_${b.key}" class="player-btn shrink-0 ${i === 0 ? 'btn-primary' : 'btn-ghost'}">${icon(b.icon)}${b.label}</button>`).join('')}
+      <div class="player-src-wrap" id="playerSrcWrap">
+        <button type="button" id="playerSrcBtn" class="player-btn btn-primary" onclick="togglePlayerSources()" aria-haspopup="listbox" aria-expanded="false">
+          ${icon('clapper')}<span id="playerSrcLabel">Источник</span><svg class="ps-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div id="playerSrcPanel" class="player-src-panel hidden" role="listbox" aria-label="Выбор источника"></div>
       </div>
-      <div id="kinoboxControls" class="hidden"></div>
       <div id="anilibriaControls" class="hidden"></div>
       <div id="playerHint"></div>
     </div>
@@ -4275,13 +4279,7 @@ ${playerButtons.length ? `
       </div>
     <div id="epList" class="ep-list"></div>
   </aside>
-</div>` : `
-<div class="player-shell">
-<div class="player-frame flex flex-col items-center justify-center text-muted gap-2 px-6 text-center">
-  <span class="text-warn">${icon('alert')}</span>
-  <span class="text-sm">Плееры для этого тайтла не найдены</span>
 </div>
-</div>`}
 </section>
 
 <div class="mt-10 md:mt-14 space-y-10 md:space-y-12">
@@ -4297,6 +4295,7 @@ ${playerButtons.length ? `
 
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+        if (playerSrcPanelOpen) { setPlayerSrcOpen(false); return; }
         if ($('#shortcutsModal') && !$('#shortcutsModal').classList.contains('hidden')) { closeShortcutsModal(); return; }
         if (!$('#searchModal').classList.contains('hidden')) { closeSearchModal(); return; }
         if (!$('#searchDropdown').classList.contains('hidden')) { dismissSearchDropdown(); return; }
@@ -4679,9 +4678,9 @@ let kbGetSaveDone = false, kbGetSaveTimer = null;
 let kbPendingSeek = null, kbSeekAttempts = 0, kbSeekLastTry = 0, kbHintShown = false;
 
 function kbPlayerWins() {
-    const c = $('#playerContainer'), root = $('#kinobox-root');
-    if (!c || !root || !c.contains(root)) return [];
-    return Array.from(root.querySelectorAll('iframe'))
+    const c = $('#playerContainer');
+    if (!c) return [];
+    return Array.from(c.querySelectorAll('iframe'))
         .map(f => { try { return f.contentWindow; } catch (e) { return null; } })
         .filter(Boolean);
 }
@@ -4988,244 +4987,207 @@ function stopKbProgressCapture() {
 /* ============================================================
    PLAYER: Kinobox / Kodik / Anilibria
    ============================================================ */
-const KINOBOX_SOURCES = [
-    { key: 'auto', label: 'Авто', icon: 'wand' },
-    { key: 'alloha', label: 'Alloha', icon: 'play' },
-    { key: 'veoveo', label: 'VeoVeo', icon: 'play' },
+/* ===== Источники плеера: кнопка-дропдаун (как у animeon) =====
+   Собственный список: kodik/anilibria из резолва + плееры Kinobox API
+   (veoveo/alloha/turbo/collaps/gencit...) с прямыми iframe-ссылками.
+   Внутренние плееры, которых нет для тайтла, — серые с пометкой «нет». */
+const PLAYER_KNOWN_SOURCES = [
+    { key: 'kodik', label: 'Kodik', icon: 'layers' },
+    { key: 'anilibria', label: 'Anilibria', icon: 'sparkles' },
+    { key: 'veoveo', label: 'VeoVeo', icon: 'clapper' },
+    { key: 'alloha', label: 'Alloha', icon: 'clapper' },
     { key: 'turbo', label: 'Turbo', icon: 'wand' },
     { key: 'collaps', label: 'Collaps', icon: 'layers' },
+    { key: 'gencit', label: 'Gencit', icon: 'clapper' },
+    { key: 'videoseed', label: 'Videoseed', icon: 'clapper' },
 ];
-function loadKinoboxScript() {
-    return new Promise(resolve => {
-        if (kinoboxLoaded) { resolve(); return; }
-        if (document.getElementById('kinobox-script')) {
-            const check = setInterval(() => { if (window.kinobox) { clearInterval(check); kinoboxLoaded = true; resolve(); } }, 150);
-            return;
-        }
-        const script = document.createElement('script');
-        script.id = 'kinobox-script';
-        script.src = 'https://fbphdplay.top/kinobox.js';
-        script.onload = () => { kinoboxLoaded = true; resolve(); };
-        script.onerror = () => resolve();
-        document.head.appendChild(script);
-    });
-}
-function renderKinoboxControls() {
-    const box = $('#kinoboxControls'); if (!box) return;
-    box.innerHTML = `
-<div class="flex flex-wrap items-center gap-2">
-<span class="text-[11px] text-faint font-semibold uppercase tracking-wider mr-1">Источник</span>
-${KINOBOX_SOURCES.map(s => `<button class="kb-src ${selectedKinoboxSource === s.key ? 'is-active' : ''}" onclick="selectKinoboxSource('${s.key}')">${icon(s.icon)}${s.label}</button>`).join('')}
-</div>`;
+const PLAYER_SRC_TTL = 60 * 60 * 12 * 1000;   // кеш Kinobox API на 12ч как на сервере
+
+function playerSrcCacheKey(it) {
+    const kp = (it.sources && it.sources.kinobox && it.sources.kinobox.kinopoiskId) || it.kinopoiskId || '';
+    return 'mediaserver_kbox_v1_' + (kp || encodeURIComponent((it.title || '') + '|' + (it.year || '')));
 }
 
-function clickKinoboxMenuItem(source) {
-    if (!source || source === 'auto') { initKinoboxMenu(source); return; }
-    clearTimeout(kbMenuPollTimer);
-    const label = (KINOBOX_SOURCES.find(s => s.key === source) || {}).label || source;
-    const startedAt = Date.now();
-    const attempt = () => {
-        const items = kbExtractTranslations();
-        if (items && items.length) {
-            const target = items.find(t => t.src === source.toLowerCase());
-            if (target) { kbSelectTranslation(target.idx); return; }
-            if (Date.now() - startedAt < 10000) { kbMenuPollTimer = setTimeout(attempt, 400); return; }
-            toast(`У источника «${label}» нет переводов для этого тайтла`, 'error');
-            return;
-        }
-        if (Date.now() - startedAt < 10000) kbMenuPollTimer = setTimeout(attempt, 400);
-    };
-    attempt();
+async function fetchKboxPlayers(it) {
+    const ckey = playerSrcCacheKey(it);
+    try {
+        const raw = localStorage.getItem(ckey);
+        if (raw) { const c = safeParse(raw, null); if (c && Array.isArray(c.data) && Date.now() - c.t < PLAYER_SRC_TTL) return c.data; }
+    } catch (e) { }
+    const kp = (it.sources && it.sources.kinobox && it.sources.kinobox.kinopoiskId) || it.kinopoiskId || '';
+    const q = kp ? 'kinopoisk=' + encodeURIComponent(kp) : (it.title ? 'title=' + encodeURIComponent(it.title) : '');
+    if (!q) return [];
+    try {
+        const res = await fetch('https://api.kinobox.tv/api/players?' + q);
+        const d = await res.json();
+        const data = (d && d.data) || [];
+        try { localStorage.setItem(ckey, JSON.stringify({ t: Date.now(), data })); } catch (e) { }
+        return data;
+    } catch (e) { return []; }
 }
 
-/* ===== Озвучки Kinobox: читаем внутреннее меню, рисуем в сайдбаре ===== */
-function kbExtractTranslations() {
-    const frame = $('#playerContainer'), root = $('#kinobox-root');
-    if (!frame || !root || !frame.contains(root)) return null;
-    const items = Array.from(root.querySelectorAll('.kinobox_menu li'));
-    if (!items.length) return null;
-    return items.map((li, i) => {
-        const raw = ((li.getAttribute('title') || '') + ' ' + (li.textContent || '')).trim();
-        const m = raw.match(/\[([a-z0-9_]+)\]/i);
-        const src = m ? m[1].toLowerCase() : '';
-        const name = raw.replace(/\[[a-z0-9_]+\]/gi, '').trim() || ('Перевод ' + (i + 1));
-        return { li, idx: i, src, name };
-    });
-}
-function kbMarkActive(idx) {
-    $$('#epList .ep-item').forEach(b => b.classList.toggle('is-active', Number(b.dataset.idx) === idx));
-}
-function kbSelectTranslation(idx) {
-    const items = kbExtractTranslations();
-    if (!items || !items[idx]) return;
-    items[idx].li.click();
-    kbMarkActive(idx);
-}
-
-/* прячем родное меню kinobox поверх видео — озвучки только в нашем сайдбаре */
-let kbMenuObserver = null;
-function kbApplyNativeMenuHide() {
-    const root = $('#kinobox-root'); if (!root) return;
-    Array.from(root.children).forEach(ch => {
-        if (ch.tagName === 'IFRAME' || ch.querySelector('iframe')) return; // плеер не трогаем
-        if (ch.querySelector('li')) ch.style.display = 'none';              // выглядит как меню — прячем
-    });
-}
-function kbHideNativeMenu() {
-    const root = $('#kinobox-root'); if (!root) return;
-    kbApplyNativeMenuHide();
-    if (!kbMenuObserver) {
-        kbMenuObserver = new MutationObserver(kbApplyNativeMenuHide);
-        kbMenuObserver.observe(root, { childList: true, subtree: true });
-    }
-}
-
-function renderKbTranslations(items) {
-    const shell = $('#playerShell'), list = $('#epList');
-    if (!shell || !list) return;
-    shell.classList.add('has-side');
-    const st = $('#epSideTitle'); if (st) st.textContent = 'Озвучка';
-    const cnt = $('#epCount'); if (cnt) cnt.textContent = items.length;
-    list.innerHTML = items.map(t => `
-        <button type="button" class="ep-item" data-idx="${t.idx}">
-            <span class="num">${icon('star')}</span>
-            <span class="nm">${escapeHtml(t.name)}</span>
-            ${t.src ? `<span class="tag">${escapeHtml(t.src)}</span>` : ''}
-        </button>`).join('');
-    list.querySelectorAll('.ep-item').forEach(btn => {
-        btn.addEventListener('click', () => kbSelectTranslation(Number(btn.dataset.idx)));
-    });
-    // активная сейчас — по классу kinobox, иначе первая
-    let activeIdx = 0;
-    items.forEach((t, i) => { if (/active|selected|current/i.test(t.li.className || '')) activeIdx = i; });
-    kbMarkActive(activeIdx);
-}
-function initKinoboxMenu(source) {
-    clearTimeout(kbMenuPollTimer);
-    const startedAt = Date.now();
-    const attempt = () => {
-        const items = kbExtractTranslations();
-        if (items && items.length) {
-            kbHideNativeMenu();
-            renderKbTranslations(items);
-            if (source && source !== 'auto') {
-                const target = items.find(t => t.src === source.toLowerCase());
-                if (target) kbSelectTranslation(target.idx);
-                else toast(`У источника «${(KINOBOX_SOURCES.find(s => s.key === source) || {}).label || source}» нет переводов для этого тайтла`, 'error');
-            } else {
-                // авто: kinobox сам выбирает — перепроверим активную чуть позже
-                setTimeout(() => {
-                    const its = kbExtractTranslations();
-                    if (!its) return;
-                    let a = 0;
-                    its.forEach((t, i) => { if (/active|selected|current/i.test(t.li.className || '')) a = i; });
-                    kbMarkActive(a);
-                }, 2500);
-            }
-            return;
-        }
-        if (Date.now() - startedAt < 12000) kbMenuPollTimer = setTimeout(attempt, 400);
-    };
-    attempt();
-}
-
-function mountKinobox(afterInit) {
-    const container = $('#playerContainer');
-    const kb = currentItem && currentItem.sources ? currentItem.sources.kinobox : null;
-    if (!container) return;
-    if (!kb || !kb.kinopoiskId) {
-        container.innerHTML = `<div class="absolute inset-0 flex flex-col items-center justify-center text-muted p-6 gap-2 text-center"><span class="text-warn">${icon('alert')}</span><p class="text-sm font-semibold text-ink">Kinobox недоступен</p><p class="text-xs">Для этого тайтла не найден ID Кинопоиска.</p></div>`;
-        return;
-    }
-    container.innerHTML = '<div class="kinobox" id="kinobox-root"></div>';
-    loadKinoboxScript().then(() => {
-        if (!window.kinobox) return;
-        window.kinobox('#kinobox-root', {
-            baseUrl: 'https://fbphdplay.top/',
-            search: { kinopoisk: kb.kinopoiskId },
-            notFoundMessage: 'Выбранный внутренний плеер не найден.'
+function buildPlayerSources(kboxPlayers) {
+    const srcs = (currentItem && currentItem.sources) || {};
+    const list = [];
+    const push = (e) => { if (e.ok && list.some(x => x.key === e.key && x.ok)) return; if (!list.some(x => x.key === e.key)) list.push(e); };
+    // свои источники из резолва — приоритет
+    if (srcs.kodik && srcs.kodik.link) push({ key: 'kodik', label: 'Kodik', icon: 'layers', ok: true, url: srcs.kodik.link });
+    if (srcs.anilibria && (srcs.anilibria.alias || srcs.anilibria.id)) push({ key: 'anilibria', label: 'Anilibria', icon: 'sparkles', ok: true, mount: 'video' });
+    // плееры Kinobox API — прямые iframe-ссылки, без виджета kinobox
+    (kboxPlayers || []).forEach((p) => {
+        const key = String(p.type || '').toLowerCase();
+        if (!key) return;
+        push({
+            key, label: (PLAYER_KNOWN_SOURCES.find(s => s.key === key) || {}).label || p.type,
+            icon: (PLAYER_KNOWN_SOURCES.find(s => s.key === key) || {}).icon || 'clapper',
+            ok: !!p.iframeUrl, url: p.iframeUrl || '', note: p.iframeUrl ? '' : 'нет',
         });
-        startKbProgressCapture();
-        if (afterInit) setTimeout(afterInit, 50);
     });
+    // известные источники, которых нет для тайтла, — серыми в конец списка
+    PLAYER_KNOWN_SOURCES.forEach(s => { if (!list.some(e => e.key === s.key)) push({ ...s, ok: false, note: 'нет' }); });
+    return list;
+}
+
+function playerShellAltSync() {
+    const shell = $('#playerShell');
+    if (!shell) return;
+    const okCount = playerSources.filter(s => s.ok).length;
+    shell.classList.toggle('has-alt', okCount > 1);
+}
+
+function renderPlayerSrcPanel() {
+    const panel = $('#playerSrcPanel');
+    if (!panel) return;
+    panel.innerHTML = playerSources.map((s, i) => {
+        const offTag = !s.ok ? `<span class="ps-off">${escapeHtml(s.note || 'нет')}</span>` : (s.key === activeSourceKey ? `<span class="ps-check">${icon('check')}</span>` : '');
+        return `<button type="button" class="ps-item ${s.key === activeSourceKey ? 'is-active' : ''} ${s.ok ? '' : 'is-off'}" data-key="${escapeAttr(s.key)}" data-idx="${i}" ${s.ok ? '' : 'disabled'}>
+            ${icon(s.icon)}<span class="ps-nm">${escapeHtml(s.label)}</span>${offTag}
+        </button>`;
+    }).join('');
+    panel.querySelectorAll('.ps-item').forEach(btn => {
+        btn.addEventListener('click', () => { if (btn.hasAttribute('disabled')) return; pickPlayerSource(btn.dataset.key); });
+    });
+}
+
+function renderPlayerSrcTrigger(entry) {
+    const label = $('#playerSrcLabel');
+    const btn = $('#playerSrcBtn');
+    if (label) label.textContent = entry ? entry.label : 'Источник';
+    if (btn) btn.classList.toggle('is-off', !!(entry && !entry.ok));
+}
+
+function setPlayerSrcOpen(open) {
+    playerSrcPanelOpen = !!open;
+    const panel = $('#playerSrcPanel'), btn = $('#playerSrcBtn');
+    if (panel) {
+        panel.classList.toggle('hidden', !open);
+        if (open) renderPlayerSrcPanel();
+    }
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function togglePlayerSources(force) {
+    setPlayerSrcOpen(force === undefined ? !playerSrcPanelOpen : !!force);
+}
+
+/* клик мимо панели — закрыть */
+document.addEventListener('click', (e) => {
+    if (!playerSrcPanelOpen) return;
+    if (e.target.closest('#playerSrcWrap')) return;
+    setPlayerSrcOpen(false);
+});
+
+function mountSourceIframe(entry) {
+    const shell = $('#playerShell'), container = $('#playerContainer');
+    if (!shell || !container) return;
+    shell.classList.remove('has-side');
+    const list = $('#epList'); if (list) list.innerHTML = '';
+    const sideTitle = $('#epSideTitle'); if (sideTitle) sideTitle.textContent = 'Эпизоды';
+    const sideCnt = $('#epCount'); if (sideCnt) sideCnt.textContent = '';
+    const hintEl = $('#playerHint'); if (hintEl) hintEl.innerHTML = '';
+    const controls = $('#anilibriaControls');
+    if (controls) { controls.classList.add('hidden'); controls.innerHTML = ''; }
+    container.innerHTML = `<iframe src="${escapeAttr(entry.url)}" allowfullscreen webkitallowfullscreen mozallowfullscreen allow="autoplay; encrypted-media; fullscreen *; picture-in-picture; web-share; clipboard-write" referrerpolicy="no-referrer"></iframe>`;
+    acquireWakeLock();
+    startKbProgressCapture();
+    // если плеер не подал признаков жизни — подсказка со сменой источника
     clearTimeout(kinoboxHintTimer);
     kinoboxHintTimer = setTimeout(() => {
         const hint = $('#playerHint');
-        if (hint) {
-            const alt = currentPlayerButtons.filter(b => b.key !== 'kinobox');
-            hint.innerHTML = `<div class="text-xs text-muted bg-white/5 border border-border rounded-xl p-3.5 flex gap-2">${icon('info')}<span>Если перевод долго не запускается — возможно, блокировщик рекламы обрывает загрузку плеера. Попробуйте отключить его для сайта или выбрать другой источник${alt.length ? ': ' + alt.map(b => b.label).join(', ') : ''}.</span></div>`;
-        }
-    }, 9000);
+        if (!hint || kbLastTime > 0) return;
+        const others = playerSources.filter(s => s.ok && s.key !== entry.key);
+        hint.innerHTML = `<div class="text-xs text-muted bg-white/5 border border-border rounded-xl p-3.5 flex gap-2">${icon('info')}<span>Плеер долго не запускается — возможно, блокировщик рекламы мешает. Выбери другой источник кнопкой выше${others.length ? ': ' + others.slice(0, 4).map(s => s.label).join(', ') : ''}.</span></div>`;
+    }, 12000);
 }
 
-function selectKinoboxSource(source) {
-    selectedKinoboxSource = source;
-    localStorage.setItem('mediaserver_kinobox_source', source);
-    setTimeout(() => {
-        renderKinoboxControls();
-        const frame = $('#playerContainer'), root = $('#kinobox-root');
-        if (root && frame && frame.contains(root)) {
-            clickKinoboxMenuItem(source);
-        } else if (currentPlayerButtons.some(b => b.key === 'kinobox')) {
-            switchPlayer('kinobox');
-        }
-    }, 0);
+/** Собирает список источников (с кешем Kinobox API), монтирует последний
+    выбранный пользователем или первый доступный. */
+async function initPlayerSources(reqId) {
+    const kbPlayers = await fetchKboxPlayers(currentItem || {});
+    if (reqId !== undefined && reqId !== titlePageRequestId) return;
+    playerSources = buildPlayerSources(kbPlayers);
+    playerShellAltSync();
+    // последний выбор пользователя, если для тайтла он доступен
+    const lastKey = localStorage.getItem('mediaserver_src_last') || '';
+    const entry = playerSources.find(s => s.ok && s.key === lastKey) || playerSources.find(s => s.ok);
+    if (!entry) {
+        const container = $('#playerContainer');
+        if (container) container.innerHTML = `<div class="absolute inset-0 flex flex-col items-center justify-center text-muted p-6 gap-2 text-center"><span class="text-warn">${icon('alert')}</span><p class="text-sm font-semibold text-ink">Плееры этого тайтла не найдены</p><p class="text-xs">Попробуй открыть его позже — источники периодически появляются.</p></div>`;
+        const label = $('#playerSrcLabel'); if (label) label.textContent = 'Нет источников';
+        const btn = $('#playerSrcBtn'); if (btn) btn.disabled = true;
+        return;
+    }
+    pickPlayerSource(entry.key);
+}
+
+function pickPlayerSource(key) {
+    const entry = playerSources.find(s => s.key === key);
+    if (!entry || !entry.ok) return;
+    activeSourceKey = key;
+    try { localStorage.setItem('mediaserver_src_last', key); } catch (e) { }
+    setPlayerSrcOpen(false);
+    renderPlayerSrcTrigger(entry);
+    renderPlayerSrcPanel();
+    destroyPlayer();
+    clearTimeout(kinboxHintTimer);
+    if (entry.mount === 'video') {
+        switchPlayer('anilibria');
+        return;
+    }
+    if (entry.key === 'kodik' && (!entry.url || !entry.ok)) {
+        // kodik из резолва всегда с ссылкой — сюда не добираемся
+        return;
+    }
+    mountSourceIframe(entry);
 }
 
 function switchPlayer(key) {
-    destroyPlayer();
-    $('#playerShell')?.classList.remove('has-side');
-    const sideList = $('#epList'); if (sideList) sideList.innerHTML = '';
-    const sideTitle = $('#epSideTitle'); if (sideTitle) sideTitle.textContent = 'Эпизоды';
-    const sideCnt = $('#epCount'); if (sideCnt) sideCnt.textContent = '';
-    clearTimeout(kinoboxHintTimer);
-    const hintEl = $('#playerHint'); if (hintEl) hintEl.innerHTML = '';
-
-    $$('.player-btn').forEach(b => { b.classList.remove('btn-primary'); b.classList.add('btn-ghost'); });
-    const btn = $(`#btn_${key}`);
-    if (btn) { btn.classList.remove('btn-ghost'); btn.classList.add('btn-primary'); }
-
-    const container = $('#playerContainer');
-    const controls = $('#anilibriaControls');
-    const kbControls = $('#kinoboxControls');
-    if (controls) { controls.classList.add('hidden'); controls.innerHTML = ''; }
-    if (kbControls) { kbControls.classList.toggle('hidden', key !== 'kinobox'); if (key === 'kinobox') renderKinoboxControls(); }
-    if (!currentItem || !container) return;
-    const srcs = currentItem.sources || {};
-
-    if (key === 'kinobox' && srcs.kinobox) {
-        mountKinobox(() => initKinoboxMenu(selectedKinoboxSource));
-        return;
-    }
-
-    if (key === 'kodik' && srcs.kodik) {
-        const link = srcs.kodik.link;
-        if (link) {
-            container.innerHTML = `<iframe src="${escapeAttr(link)}" allowfullscreen webkitallowfullscreen mozallowfullscreen allow="autoplay; encrypted-media; fullscreen *; picture-in-picture; web-share" referrerpolicy="no-referrer"></iframe>`;
-            acquireWakeLock();
-        } else {
-            container.innerHTML = `<div class="absolute inset-0 flex items-center justify-center text-muted text-sm">Ссылка Kodik недоступна.</div>`;
-        }
-        return;
-    }
-
-    if (key === 'anilibria' && srcs.anilibria) {
+    if (key === 'anilibria') {
+        destroyPlayer();
+        const shell = $('#playerShell');
+        const srcs = (currentItem && currentItem.sources) || {};
+        if (!(srcs.anilibria && (srcs.anilibria.alias || srcs.anilibria.id))) return;
+        shell?.classList.add('has-side');   // сайдбар эпизодов
+        const list = $('#epList'); if (list) list.innerHTML = '';
+        const sideTitle = $('#epSideTitle'); if (sideTitle) sideTitle.textContent = 'Эпизоды';
+        const sideCnt = $('#epCount'); if (sideCnt) sideCnt.textContent = '';
+        const hintEl = $('#playerHint'); if (hintEl) hintEl.innerHTML = '';
+        const container = $('#playerContainer');
+        const controls = $('#anilibriaControls');
         container.innerHTML = `<video id="aniVideo" controls playsinline style="background:#000"></video>`;
         if (controls) { controls.classList.remove('hidden'); controls.innerHTML = `<div class="flex items-center gap-2 text-muted text-sm"><span class="loader-spin loader-spin-sm"></span>Загрузка серий…</div>`; }
         loadAnilibria(srcs.anilibria.alias || srcs.anilibria.id);
         return;
     }
-
-    container.innerHTML = `<div class="absolute inset-0 flex items-center justify-center text-muted text-sm">Плеер недоступен</div>`;
+    // kodik и остальные iframe-источники — через pickPlayerSource
+    pickPlayerSource(key);
 }
 
 function destroyPlayer() {
     stopKbProgressCapture();
     if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-    if (typeof kbMenuObserver !== 'undefined' && kbMenuObserver) { kbMenuObserver.disconnect(); kbMenuObserver = null; }
     releaseWakeLock(true);
     clearTimeout(kinoboxHintTimer);
-    clearTimeout(kbMenuPollTimer);
     window._aniFlush = null;
     const c = $('#playerContainer'); if (c) c.innerHTML = '';
 }
@@ -6490,7 +6452,6 @@ window.addEventListener('message', (e) => {
         toast('Просроченная попытка входа Google — попробуй ещё раз', 'error');
         return;
     }
-    toast('Аккаунт выбран — входим…', 'info');
     if (isLink) finishGoogleLink(d.code);
     else finishGooglePopup(d.code);
 });
