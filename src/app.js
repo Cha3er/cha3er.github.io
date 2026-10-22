@@ -4914,15 +4914,32 @@ window.addEventListener('message', (ev) => {
     const wins = kbPlayerWins();
     if (!wins.length || !wins.includes(ev.source)) return;
 
-    if (d.event === 'getSave') {
+    if (d.event === 'getSave' || d.event === 'getTimeSave') {
         kbGetSaveDone = true;
         if (kbGetSaveTimer) { clearInterval(kbGetSaveTimer); kbGetSaveTimer = null; }
         if (d.saveInfo && typeof d.saveInfo === 'object') {
             const si = d.saveInfo;
             const ep = Number(si.serial && si.serial.episode);
+            const szn = Number(si.serial && si.serial.season);
             const t = Number(si.time) || 0;
-            if (Number.isFinite(ep) && ep > 0) { kbProgEpNum = ep; window._kbEpisode = ep; }
-            if (t > 10) { kbLastTime = t; saveProgress(kbProgEpNum, t, kbDuration || 0); }
+            /* alloha-сейв может отставать от смонтированного нами состояния
+               (их resume отклоняется при конфликте URL, а сейв висит старый) —
+               фильтруем: серию/сезон берём только совпадающие с нашим mount'ом */
+            const serMatch = !(extState && extState.sel) || (Number(szn) === Number(extState.sel.season || 0) && Number(ep) === Number(extState.sel.episode || 0));
+            if (serMatch) {
+                if (Number.isFinite(ep) && ep > 0) { kbProgEpNum = ep; window._kbEpisode = ep; }
+                if (Number.isFinite(szn) && szn > 0) window._kbSeason = szn;
+                if (t > 10) { kbLastTime = t; saveProgress(kbProgEpNum, t, kbDuration || 0); }
+                // alloha сам сменил сезон/серию/озвучку внутри плеера — отражаем в UI сайта
+                const _mraw = si.time;
+                const _mtime = typeof _mraw === 'number' ? _mraw : (String(_mraw || '').split(':').map(Number).reverse().reduce((acc, v, i) => acc + v * (i ? Math.pow(60, i) : 1), 0) || 0);
+                syncExtFromPlayer({
+                    ep: Number.isFinite(ep) && ep > 0 ? ep : null,
+                    season: Number.isFinite(szn) && szn > 0 ? szn : null,
+                    time: _mtime,
+                    src: ev.source
+                });
+            }
         }
         return;
     }
@@ -4936,6 +4953,9 @@ window.addEventListener('message', (ev) => {
     if (Number.isFinite(_ep) && _ep > 0) { kbProgEpNum = _ep; window._kbEpisode = _ep; }
     if (Number.isFinite(_season) && _season > 0) window._kbSeason = _season;
     if (_tr) window._kbTranslation = String(_tr);
+
+    // alloha сам сменил серию/сезон/озвучку внутри плеера — отражаем в UI сайта
+    syncExtFromPlayer({ ep: Number.isFinite(_ep) && _ep > 0 ? _ep : null, season: Number.isFinite(_season) && _season > 0 ? _season : null, tr: _tr ? String(_tr) : null, src: ev.source });
 
     // длительность — в d.duration
     const t = Number(d.time ?? d.value ?? (d.data && d.data.time));
@@ -4975,7 +4995,7 @@ function startKbProgressCapture() {
     let tries = 0;
     kbGetSaveTimer = setInterval(() => {
         if (++tries > 20 || kbGetSaveDone) { clearInterval(kbGetSaveTimer); kbGetSaveTimer = null; return; }
-        kbPlayerWins().forEach(w => { try { w.postMessage(JSON.stringify({ event: 'getSave' }), '*'); } catch (e) { } });
+        kbPlayerWins().forEach(w => { try { w.postMessage(JSON.stringify({ api: 'getTimeSave' }), '*'); } catch (e) { } });
     }, 1500);
 }
 function stopKbProgressCapture() {
@@ -5090,6 +5110,8 @@ function renderPlayerSrcPanel() {
         panel.querySelector('#psExtChk').addEventListener('change', (e) => {
             playerExtControls = !!e.target.checked;
             try { localStorage.setItem('mediaserver_ext_controls', playerExtControls ? 'on' : 'off'); } catch (err) { }
+            // мгновенный откат/возврат: перезапускаем активный источник
+            if (activeSourceKey) pickPlayerSource(activeSourceKey);
         });
     }
 }
@@ -5156,7 +5178,7 @@ async function loadPlayerInfo(entry) {
     if (!entry || !entry.url) return null;
     let tokenPart = '';
     try { tokenPart = (new URL(allohaExtUrl(entry.url), location.href)).searchParams.get('token_movie') || ''; } catch (e) { }
-    const lsKey = 'mediaserver_pi_' + (tokenPart || encodeURIComponent(entry.url).slice(0, 40));
+    const lsKey = 'mediaserver_pi2_' + (tokenPart || encodeURIComponent(entry.url).slice(0, 40));
     try {
         const v = safeParse(localStorage.getItem(lsKey), null);
         if (v && v.at && Date.now() - v.at < 3600 * 1000 && v.info) return v.info;
@@ -5165,7 +5187,7 @@ async function loadPlayerInfo(entry) {
         const res = await fetch(`${API_BASE}/api/source/player-info?url=${encodeURIComponent(allohaExtUrl(entry.url))}`);
         const d = await res.json();
         if (d && d.type === 'alloha' && Array.isArray(d.seasons) && d.seasons.length) {
-            const info = { seasons: d.seasons, translations: d.translations || [], seasonTranslations: d.seasonTranslations || {}, active: d.active || {} };
+            const info = { seasons: d.seasons, translations: d.translations || [], seasonTranslations: d.seasonTranslations || {}, epKeys: d.epKeys || {}, epTranslations: d.epTranslations || {}, active: d.active || {} };
             try { localStorage.setItem(lsKey, JSON.stringify({ at: Date.now(), info })); } catch (e) { }
             return info;
         }
@@ -5196,23 +5218,131 @@ async function loadExtSeasons() {
 /* seq-счётчик: поздний ответ данных не перерисует уже перезапущенный плеер */
 let extRenderSeq = 0;
 
-/* нормализуем sel по данным оригинатора: сезон/серия должны существовать */
+/* текущее состояние ext: источник+выбор+данные — используется для зеркала
+   внутренних изменений alloha (керой меняет серию/озвучку в своём плеере) */
+const extState = { entry: null, sel: null, info: null, timer: 0, poll: 0, mountAt: 0 };
+
+/* живое зеркало alloha: сам плеер наружу состояние НЕ шлёт (только
+   play/pause/seek/timeupdate со временем), но отвечает на api-команду
+   {api:'getTimeSave'} полным saveInfo {translation, idTranslation, serial:{season,episode}}.
+   Опрашиваем каждые 2с, пока активен alloha-ext — этим синхронизируем UI сайта */
+function extMirrorSend() {
+    const ifr = $('#playerContainer iframe');
+    if (!ifr) return;
+    try { ifr.contentWindow.postMessage(JSON.stringify({ api: 'getTimeSave' }), '*'); } catch (e) { }
+}
+function extMirrorStart() {
+    extMirrorStop();
+    extState.poll = setInterval(extMirrorSend, 2000);
+    setTimeout(extMirrorSend, 2200);   // первый опрос — дать alloha применить URL-состояние
+}
+function extMirrorStop() {
+    if (extState.poll) { clearInterval(extState.poll); extState.poll = null; }
+}
+/* окно доверия состоянию alloha сразу после монтирования плеера */
+function graceExtMount() { return Date.now() - (extState.mountAt || 0) < 15000; }
+
+/* зеркало состояния alloha: плеер сам сообщил сезон/серию/озвучку —
+   приводим UI сайта (полосу и сайдбар) к нему БЕЗ перезапуска плеера */
+function syncExtFromPlayer(m) {
+    if (!playerExtControls || !extState.entry || !extState.info) return;
+    const ifr = $('#playerContainer iframe');
+    if (!ifr || !m.src || ifr.contentWindow !== m.src) return;
+    const cur = extState.sel || {};
+    const next = { ...cur };
+    let changed = false;
+    /* alloha-семантика сейва (проверено) + окно монтирования 15с: сейв отражает
+       состояние НА момент монтирования, обновляется периодично/не всегда.
+       Несоответствие (сезон,серии) с тем, что мы смонтировали = устаревший сейв
+       (alloha сам отклоняет resume при конфликте URL) — в окне игнорируем всегда;
+       после окна alloha мог сам переключить файл — принимаем только если это
+       «новый файл» (время<60, плеер перезапускается с начала). */
+    if (m.season && m.ep) {
+        const serMatch = Number(m.season) === Number(cur.season) && Number(m.ep) === Number(cur.episode);
+        if (!serMatch) {
+            if (graceExtMount()) return;
+            if (!(Number(m.time) >= 0 && Number(m.time) < 60)) return;
+        }
+    }
+    if (m.season && Number(m.season) > 0 && Number(m.season) !== Number(cur.season)) {
+        next.season = Number(m.season);
+        changed = true;
+    }
+    if (m.ep && Number(m.ep) > 0 && Number(m.ep) !== Number(cur.episode)) {
+        next.episode = Number(m.ep);
+        changed = true;
+    }
+    /* озвучку alloha зеркалим ОТКЛЮЧЁННО: alloha в своём сейве всегда держит
+       озвучку, выбранную при ЗАГРУЗКЕ страницы, и после нашего выбора в сайдбаре
+       «откатывает» подсветку назад. Подсветкой озвучки управляет только наш
+       сайдбар, зеркалим только сезон/серию. */
+    if (!changed) return;
+    const aligned = alignExtSel(next, extState.info);
+    clearTimeout(extState.timer);
+    extState.timer = setTimeout(() => {
+        extState.sel = aligned;
+        renderExtBottom(extState.entry, aligned, extState.info);
+        renderExtSidebar(extState.entry, aligned, extState.info);
+    }, 700);
+}
+
+/* озвучки, доступные для ИМЕННО этой серии (falls back на сезон) */
+function extTrIdsFor(sel, info) {
+    if (!info) return null;
+    const et = info.epTranslations;
+    if (et && typeof et === 'object') {
+        const byEp = et[String(sel.season)] || {};
+        const ids = byEp[String(sel.episode)];
+        if (Array.isArray(ids)) return ids.map(Number);
+    }
+    const st = info.seasonTranslations;
+    if (st && typeof st === 'object') return (st[String(sel.season)] || []).map(Number);
+    return null;
+}
+
+/* нормализуем sel по данным оригинатора: сезон/серия/озвучка должны существовать */
 function alignExtSel(sel, info) {
     if (!info) return sel;
     const seasons = info.seasons || [];
     if (seasons.length && !seasons.some(s => Number(s.n) === Number(sel.season))) {
         sel = { ...sel, season: Number(seasons[0].n) || 1, episode: 1 };
     }
+    const eps = info.epKeys ? (info.epKeys[String(sel.season)] || []) : null;
+    if (eps && eps.length && !eps.includes(Number(sel.episode))) {
+        sel = { ...sel, episode: Number(eps[0]) };
+    }
     const cur = seasons.find(s => Number(s.n) === Number(sel.season));
-    if (cur && Number(cur.count) > 0 && Number(sel.episode) > Number(cur.count)) {
+    if (!eps && cur && Number(cur.count) > 0 && Number(sel.episode) > Number(cur.count)) {
         sel = { ...sel, episode: Number(cur.count) };
     }
-    // озвучка текущего сезона: чужую сбрасываем
-    const ids = info.seasonTranslations ? (info.seasonTranslations[String(sel.season)] || []) : null;
-    if (Array.isArray(ids) && ids.length && sel.translationId && !ids.includes(Number(sel.translationId))) {
-        sel = { ...sel, translationId: null };
+    // озвучка текущего сезона+серии: чужую сбрасываем (иначе alloha покажет
+    // «этой серии в указанной озвучке нет»)
+    if (sel.translationId) {
+        const ids = extTrIdsFor(sel, info);
+        if (Array.isArray(ids) && ids.length && !ids.includes(Number(sel.translationId))) {
+            sel = { ...sel, translationId: null };
+        }
     }
     return sel;
+}
+
+/* список номеров серий сезона (из данных оригинатора, fallback — 1..count) */
+function extEpList(sel, info, seasonsTmdb) {
+    if (info && info.epKeys && Array.isArray(info.epKeys[String(sel.season)]) && info.epKeys[String(sel.season)].length) {
+        return info.epKeys[String(sel.season)].map(Number);
+    }
+    const seasons = (info && Array.isArray(info.seasons) && info.seasons.length)
+        ? info.seasons.map(s => ({ season: Number(s.n), count: Number(s.count) || 0 }))
+        : (seasonsTmdb || []).map(s => ({ season: Number(s.season), count: Number(s.count) || 0 }));
+    if (info) {
+        const cur = seasons.find(s => Number(s.season) === Number(sel.season));
+        if (cur && cur.count > 0) {
+            const nums = [];
+            for (let i = 1; i <= cur.count; i++) nums.push(i);
+            return nums;
+        }
+    }
+    return [];
 }
 
 /* полоса под плеером (как у anilibria): сезоны + серии */
@@ -5223,8 +5353,8 @@ function renderExtBottom(entry, sel, info, seasonsTmdb) {
         ? info.seasons.map(s => ({ season: Number(s.n), count: Number(s.count) || 0 }))
         : (seasonsTmdb || []).map(s => ({ season: Number(s.season), count: Number(s.count) || 0 }));
     if (!playerExtControls || (entry.key !== 'alloha')) { ec.classList.add('hidden'); ec.innerHTML = ''; return; }
-    const cur = seasons.find(s => Number(s.season) === Number(sel.season));
-    const total = cur ? cur.count : 0;
+    const nums = extEpList(sel, info, seasonsTmdb);
+    const total = nums.length;
     if (seasons.length <= 1 && total <= 0) { ec.classList.add('hidden'); ec.innerHTML = ''; return; }
     ec.classList.remove('hidden');
     let html = '';
@@ -5236,15 +5366,13 @@ function renderExtBottom(entry, sel, info, seasonsTmdb) {
         </div></div>`;
     }
     if (total > 1) {
-        const nums = [];
-        for (let i = 1; i <= Math.min(total, 300); i++) nums.push(i);
         html += `<div class="flex items-center gap-2 min-w-0 mt-1">
         <span class="text-[11px] text-faint font-semibold uppercase tracking-wider shrink-0 hidden sm:inline">Серии <span class="n">${total}</span></span>
         <button type="button" class="ep-arrow" onclick="extScrollNums(-1)" aria-label="Серии назад">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
         <div class="ep-nums">
-          ${nums.map(n => `<button type="button" class="ep-num ext-ep ${n === sel.episode ? 'is-active' : ''}" data-ep="${n}">${n}</button>`).join('')}
+          ${nums.map(nn => `<button type="button" class="ep-num ext-ep ${Number(nn) === Number(sel.episode) ? 'is-active' : ''}" data-ep="${nn}">${nn}</button>`).join('')}
         </div>
         <button type="button" class="ep-arrow" onclick="extScrollNums(1)" aria-label="Серии вперёд">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -5255,11 +5383,11 @@ function renderExtBottom(entry, sel, info, seasonsTmdb) {
     ec.querySelectorAll('.ep-sz').forEach(b => b.addEventListener('click', () => {
         const s = Number(b.dataset.sz);
         if (s === sel.season) return;
-        remountExternalPlayer(entry, { ...sel, season: s, episode: 1 });
+        chooseExt(entry, sel, info, { season: s, episode: 1, translationId: sel.translationId });
     }));
     ec.querySelectorAll('.ext-ep').forEach(b => b.addEventListener('click', () => {
-        if (Number(b.dataset.ep) === sel.episode) return;
-        remountExternalPlayer(entry, { ...sel, episode: Number(b.dataset.ep) });
+        if (Number(b.dataset.ep) === Number(sel.episode)) return;
+        chooseExt(entry, sel, info, { episode: Number(b.dataset.ep) });
     }));
 }
 
@@ -5271,14 +5399,14 @@ window.extScrollNums = (dir) => {
     else row.scrollBy({ left: dir * step, behavior: 'smooth' });
 };
 
-/* озвучки текущего сезона в правом блоке */
+/* озвучки ТЕКУЩЕЙ серии в правом блоке */
 function renderExtSidebar(entry, sel, info, entryTranslations) {
     const shell = $('#playerShell'), list = $('#epList');
     if (!shell || !list) return;
     let trs = [];
-    if (info && Array.isArray(info.seasonTranslations)) {
-        const curIds = info.seasonTranslations[String(sel.season)] || [];
-        trs = (info.translations || []).filter(t => curIds.includes(Number(t.id)));
+    const ids = extTrIdsFor(sel, info);
+    if (info && Array.isArray(ids)) {
+        trs = (info.translations || []).filter(t => ids.includes(Number(t.id)));
     } else {
         trs = entryTranslations || [];
     }
@@ -5297,8 +5425,17 @@ function renderExtSidebar(entry, sel, info, entryTranslations) {
     list.querySelectorAll('.ep-item[data-tr]').forEach(b => b.addEventListener('click', () => {
         const id = Number(b.dataset.tr);
         if (sel.translationId === id) return;
-        remountExternalPlayer(entry, { ...sel, translationId: id });
+        chooseExt(entry, sel, info, { translationId: id });
     }));
+}
+
+/* выбор сезона/серии/озвучки: сначала выравниваем sel по данным,
+   затем один перезапуск — alloha не покажет «этой серии в указанной
+   озвучке нет», т.к. невалидную озвучку уже сняли */
+function chooseExt(entry, sel, info, patch) {
+    const next = { ...sel, ...patch };
+    const aligned = alignExtSel(next, info);
+    remountExternalPlayer(entry, aligned, info);
 }
 
 /* рендер всего ext-UI с учётом данных оригинатора (после загрузки info) */
@@ -5318,6 +5455,7 @@ function applyExtUI(entry, sel, info, seasonsTmdb) {
 
 /* перезапуск плеера с новым эпизодом/озвучкой/сезоном (URL-параметры) */
 function remountExternalPlayer(entry, sel, info) {
+    if (info) sel = alignExtSel(sel, info);
     window._kbSeason = sel.season;
     window._kbTranslation = sel.translationId ? String(sel.translationId) : '';
     destroyPlayer();
@@ -5326,7 +5464,13 @@ function remountExternalPlayer(entry, sel, info) {
     container.innerHTML = `<iframe src="${escapeAttr(buildExtUrl(entry, sel))}" allowfullscreen webkitallowfullscreen mozallowfullscreen allow="autoplay; encrypted-media; fullscreen *; picture-in-picture; web-share; clipboard-write"></iframe>`;
     acquireWakeLock();
     startKbProgressCapture();
+    extState.mountAt = Date.now();
+    extMirrorStart();
     const seq = ++extRenderSeq;
+    extState.entry = entry;
+    extState.sel = sel;
+    extState.info = info || null;
+    clearTimeout(extState.timer);
     if (info) {
         renderExtBottom(entry, sel, info);
         renderExtSidebar(entry, sel, info);
@@ -5335,6 +5479,8 @@ function remountExternalPlayer(entry, sel, info) {
             if (seq !== extRenderSeq) return;
             info = pi;
             sel = alignExtSel(sel, pi);
+            extState.sel = sel;
+            extState.info = pi || null;
             if (pi) {
                 renderExtBottom(entry, sel, pi);
                 renderExtSidebar(entry, sel, pi);
@@ -5356,6 +5502,11 @@ function mountSourceIframe(entry) {
     if (controls) { controls.classList.add('hidden'); controls.innerHTML = ''; }
     const extCtl = $('#extControls');
     if (extCtl) { extCtl.classList.add('hidden'); extCtl.innerHTML = ''; }
+    extState.entry = null;
+    extState.sel = null;
+    extState.info = null;
+    extMirrorStop();
+    clearTimeout(extState.timer);
     // внешний контроль — только Alloha (kodik своих URL-параметров не понимает)
     const ext = playerExtControls && entry.key === 'alloha' && !!entry.url;
     let sel = { episode: 1, season: 1, translationId: null };
@@ -5372,6 +5523,8 @@ function mountSourceIframe(entry) {
     acquireWakeLock();
     startKbProgressCapture();
     if (ext) {
+        extState.mountAt = Date.now();
+        extMirrorStart();
         const seq = ++extRenderSeq;
         const seasonsTmdb = [];
         // сначала мгновенный рендер по кешу, затем точный по OWN-данным
@@ -5382,10 +5535,16 @@ function mountSourceIframe(entry) {
                 const aligned = alignExtSel(sel, pi);
                 const differs = aligned.season !== sel.season || aligned.episode !== sel.episode || (aligned.translationId || null) !== (sel.translationId || null);
                 sel = aligned;
+                extState.entry = entry;
+                extState.sel = sel;
+                extState.info = pi;
                 renderExtBottom(entry, sel, pi);
                 renderExtSidebar(entry, sel, pi);
                 if (differs) remountExternalPlayer(entry, sel, pi);
             } else {
+                extState.entry = entry;
+                extState.sel = sel;
+                extState.info = null;
                 applyExtUI(entry, sel, null);
             }
         });
@@ -5465,6 +5624,7 @@ function switchPlayer(key) {
 
 function destroyPlayer() {
     stopKbProgressCapture();
+    extMirrorStop();
     if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
     releaseWakeLock(true);
     clearTimeout(kinoboxHintTimer);
