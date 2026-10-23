@@ -191,6 +191,28 @@ function placeholderSvg(w, h) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#141417"/><stop offset="1" stop-color="#0c0c0e"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><g stroke="#3a3a42" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(${w / 2 - 14},${h / 2 - 14})"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 16h5M17 8h5M17 16h5"/></g></svg>`;
     return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
+
+/* ===== Авторетрай сломанных картинок =====
+   При загрузке страницы сайт стреляет десятками постеров через /api/img
+   разом — часть падает по upstream, а браузер упавший <img> не
+   перезапрашивает, и картинка навсегда остаётся заглушкой. Перехватываем
+   ошибку ДО инлайн-обработчика и дважды перепробуем с паузой. */
+document.addEventListener('error', (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== 'IMG') return;
+    const src = el.getAttribute('src') || '';
+    if (src.indexOf('/api/img') === -1) return;
+    const n = Number(el.dataset.imgRetry || 0);
+    if (n >= 2) return;   // дальше покажется штатная заглушка
+    // stopPropagation отсекает инлайн onerror — заглушка пока не ставится
+    e.stopPropagation();
+    el.dataset.imgRetry = String(n + 1);
+    const sep = src.includes('?') ? '&' : '?';
+    setTimeout(() => {
+        if (!el.isConnected) return;
+        el.src = src + sep + 'rtr=' + (n + 1);
+    }, 900 + n * 1400);
+}, true);
 function normalizeClientTitle(v) { return String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ''); }
 function itemKey(it) {
     if (it?.kinopoiskId) return `kp:${it.kinopoiskId}`;
@@ -1127,19 +1149,27 @@ function calcAcctStats() {
 }
 function refreshHeaderAvatar() {
     const url = (window._profileData && window._profileData.avatar) || '';
+    // img() добавляет API_BASE — на GitHub Pages относительный /uploads/
+    // указывал бы на Pages и дал бы 404 (отсюда вечные инициалы)
+    const src = url ? img(url) : '';
     $$('.aon-avatar').forEach(av => {
-        const img = av.querySelector('.js-av-img'), init = av.querySelector('.js-av-init'), guest = av.querySelector('.av-guest');
-        if (!img || !init || !guest) return;
-        if (accountUser && url) {
-            img.onerror = () => { img.classList.add('hidden'); init.classList.remove('hidden'); };
-            img.src = url;
-            img.classList.remove('hidden'); init.classList.add('hidden'); guest.classList.add('hidden');
+        const imgEl = av.querySelector('.js-av-img'), init = av.querySelector('.js-av-init'), guest = av.querySelector('.av-guest');
+        if (!imgEl || !init || !guest) return;
+        if (accountUser && src) {
+            // повторное присвоение того же src перезапускает загрузку — «моргание»
+            // во время просмотра (сохранение прогресса дёргает шапку каждые ~10с)
+            if (imgEl.dataset.avSrc !== src) {
+                imgEl.dataset.avSrc = src;
+                imgEl.onerror = () => { imgEl.classList.add('hidden'); init.classList.remove('hidden'); };
+                imgEl.src = src;
+            }
+            imgEl.classList.remove('hidden'); init.classList.add('hidden'); guest.classList.add('hidden');
         } else if (accountUser) {
-            img.classList.add('hidden');
+            imgEl.classList.add('hidden');
             init.textContent = initials(accountUser.username);
             init.classList.remove('hidden'); guest.classList.add('hidden');
         } else {
-            img.classList.add('hidden'); init.classList.add('hidden'); guest.classList.remove('hidden');
+            imgEl.classList.add('hidden'); init.classList.add('hidden'); guest.classList.remove('hidden');
         }
     });
 }
@@ -1999,7 +2029,7 @@ function renderSettings() {
 <div class="st-layout">
     <aside class="st-side">
         <div class="st-usercard">
-            <span class="st-uc-ava">${p.avatar ? `<img src="${p.avatar}" alt="">` : escapeHtml(initials(accountUser.username))}</span>
+            <span class="st-uc-ava">${p.avatar ? `<img src="${img(p.avatar)}" alt="">` : escapeHtml(initials(accountUser.username))}</span>
             <div class="min-w-0 flex-1">
                 <p class="st-uc-name">${escapeHtml(accountUser.username)}</p>
                 <p class="st-uc-mail">${escapeHtml(accountUser.email || 'почта не указана')}</p>
@@ -2027,9 +2057,9 @@ function stProfileTab() {
         <p>Так вас видят другие пользователи</p>
     </div>
     <div class="st-preview">
-        <div class="st-pr-banner" style="${p.banner ? `background-image:url('${p.banner}')` : ''}"></div>
+        <div class="st-pr-banner" style="${p.banner ? `background-image:url('${img(p.banner)}')` : ''}"></div>
         <div class="st-pr-body">
-            <span class="st-pr-ava">${p.avatar ? `<img src="${p.avatar}" alt="">` : escapeHtml(initials(accountUser.username))}</span>
+            <span class="st-pr-ava">${p.avatar ? `<img src="${img(p.avatar)}" alt="">` : escapeHtml(initials(accountUser.username))}</span>
             <div class="min-w-0">
                 <p class="st-pr-name">${escapeHtml(accountUser.username)}</p>
                 ${accountUser.email ? `<p class="st-pr-bio">${escapeHtml(accountUser.email)}</p>` : ''}
@@ -2065,7 +2095,7 @@ function stProfileTab() {
     </div>
     <div class="flex items-center gap-4 flex-wrap">
         <label class="st-avpick" title="Заменить">
-            ${p.avatar ? `<img src="${p.avatar}" alt="Фото профиля">` : `<span class="st-av-empty">${escapeHtml(initials(accountUser.username))}</span>`}
+            ${p.avatar ? `<img src="${img(p.avatar)}" alt="Фото профиля">` : `<span class="st-av-empty">${escapeHtml(initials(accountUser.username))}</span>`}
             <span class="st-pick-hov">${ST_ICONS.crop}<span>Заменить</span></span>
             <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden" onchange="uploadProfileImage('avatar', this)">
         </label>
@@ -2082,7 +2112,7 @@ function stProfileTab() {
         <p>Отображается вверху страницы профиля</p>
     </div>
     <label class="st-banpick" title="Заменить">
-        <div class="st-banner" style="${p.banner ? `background-image:url('${p.banner}')` : ''}"></div>
+        <div class="st-banner" style="${p.banner ? `background-image:url('${img(p.banner)}')` : ''}"></div>
         <span class="st-pick-hov st-pick-hov--ban">${ST_ICONS.crop}<span>Заменить</span></span>
         <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden" onchange="uploadProfileImage('banner', this)">
     </label>
@@ -2360,7 +2390,7 @@ function renderProfile() {
     const recentRatings = entries.slice(0, 5);
 
     const avatarInner = avatarUrl
-        ? `<img src="${avatarUrl}" alt="" class="w-full h-full rounded-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        ? `<img src="${img(avatarUrl)}" alt="" class="w-full h-full rounded-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
            <span class="w-full h-full rounded-full bg-marquee/20 flex items-center justify-center text-3xl font-bold font-display text-marqueeHi" style="display:none">${escapeHtml((name || '?').slice(0, 2).toUpperCase())}</span>`
         : `<span class="w-full h-full rounded-full bg-marquee/20 flex items-center justify-center text-3xl font-bold font-display text-marqueeHi">${escapeHtml((name || '?').slice(0, 2).toUpperCase())}</span>`;
 
@@ -2380,7 +2410,7 @@ function renderProfile() {
     host.innerHTML = `
 <!-- ===== БАННЕР ===== -->
 <div class="profile-banner mb-4">
-    ${banner ? `<img src="${banner}" alt="" onerror="this.style.display='none'">` : '<div class="profile-banner-empty">🎬</div>'}
+    ${banner ? `<img src="${img(banner)}" alt="" onerror="this.style.display='none'">` : '<div class="profile-banner-empty">🎬</div>'}
     <div class="profile-banner-fade"></div>
     ${isOwn ? `
     <div class="absolute top-3 right-3 flex gap-2 z-10">
@@ -6341,10 +6371,30 @@ async function staffHoverBuildCard(anchor, staffId) {
 window.addEventListener('scroll', staffHoverRemoveCard, { passive: true });
 window.addEventListener('resize', staffHoverRemoveCard, { passive: true });
 
-function renderActorRow(p, idx) {
+function renderActorRow(p, idx, full) {
     const name = p.nameRu || p.nameEn || '';
     const id = Number(p.staffId);
     if (!name || !Number.isFinite(id) || id <= 0) return '';
+    // В полностраничном режиме (модалка «Все актёры») — фото + имя + роль,
+    // как у Кинопоиска; без класса actor-extra, иначе строки скроются
+    if (full) {
+        const role = String(p.professionText || p.description || '').trim();
+        return `
+        <li>
+            <a href="/actor/${id}" class="actor-photo-row"
+                onclick="event.preventDefault(); closeActorsModal(); openStaffPage(${id}); return false;"
+                onmouseenter="staffHoverShow(this, ${id})" onmouseleave="staffHoverHide()">
+                <span class="actor-photo-w">
+                    <img src="${img(p.posterUrl) || placeholderSvg(96, 96)}" alt="" loading="lazy"
+                        onerror="this.onerror=null;this.src=placeholderSvg(96,96)">
+                </span>
+                <span class="min-w-0">
+                    <span class="actor-photo-name">${escapeHtml(name)}</span>
+                    ${role ? `<span class="actor-photo-role">${escapeHtml(role)}</span>` : ''}
+                </span>
+            </a>
+        </li>`;
+    }
     return `
         <li${idx >= 10 ? ' class="actor-extra"' : ''}><a href="/actor/${id}" class="actor-name-link"
             onclick="event.preventDefault(); openStaffPage(${id}); return false;"
@@ -6358,8 +6408,8 @@ function openActorsModal(kind) {
     const title = isVoice ? 'Роли дублировали' : 'В главных ролях';
     $('#actorsModalTitle').textContent = `${title} · ${data.length}`;
     $('#actorsModalBody').innerHTML = `
-        <ul class="actor-name-list am-cols am-list">
-            ${data.map((p, i) => renderActorRow(p, i)).join('')}
+        <ul class="actor-photo-list">
+            ${data.map((p, i) => renderActorRow(p, i, true)).join('')}
         </ul>`;
     $('#actorsModal').classList.remove('hidden');
     lockPageScroll();
